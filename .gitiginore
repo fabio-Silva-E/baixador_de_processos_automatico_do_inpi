@@ -1,0 +1,22 @@
+﻿﻿*.pdf
+*.pyz
+geoip*
+cached-microdescs
+dist/
+build/
+venv*/
+*.exe
+*.dll
+*.pkg
+__pycache__/
+*.pyc
+# PyInstaller
+/dist/
+/build/
+*.spec
+
+
+build/
+dist/
+*.exe
+*.pkg
