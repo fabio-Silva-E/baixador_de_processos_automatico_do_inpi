@@ -1,43 +1,27 @@
-# ui/app.py
-import pyautogui
+
 import os
-import time
-import sys
-import tempfile
-import shutil
-import requests
 import threading
+import time
+import psutil
+import os
+
 
 from config.paths import DOWNLOAD_DIR
-from config.settings import WAIT_MEDIUM, URL_INPI, URL_DESTINO
+from config.settings import URL_INPI
 from core.selenium_controller import SeleniumController
-from core.processo_manager import selecionar_processo, atualizar_lista_processos, abrir_detalhe_processo
-print(requests.get("https://api.ipify.org").text)
-from config.paths import PROFILE_PATH, BASE_DIR, EXCEL_PROCESSOS_PATH
+
+from config.paths import  BASE_DIR
 from collections import deque
 from pathlib import Path
-from urllib.parse import urljoin
-from datetime import datetime
 from openpyxl import Workbook, load_workbook
-
 
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget,
-    QLabel, QMessageBox, QApplication, QProgressDialog, QTextEdit, QMessageBox, QComboBox
+    QLabel, QApplication, QTextEdit, QMessageBox, QComboBox
 )
-from PyQt5.QtCore import QTimer, QDateTime, QThread, pyqtSignal
+from PyQt5.QtCore import QTimer, QDateTime, pyqtSignal
 
-# Selenium imports
-from selenium import webdriver
 
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (
-    NoSuchElementException, TimeoutException, WebDriverException,
-    ElementClickInterceptedException, UnexpectedAlertPresentException,
-    NoAlertPresentException
-)
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # suas funções internas
 
@@ -79,10 +63,40 @@ from core.captcha_manager import (
     clicar_try_again,
     tratar_modal_captcha,
     selenium_get_recaptcha_iframe,
-    clicar_imagem
+    clicar_imagem,clicar_reload_duplo,
+    captcha_travado,
+    clicar_checkbox_recaptcha,
+    verificar_popup_erro_inpi
 )
+import faulthandler
+
+from core.network_utils import (
+    wait_element,
+    wait_clickable,
+    wait_title
+)
+import sys
+import traceback
+from utils.log_utils import logger
+
+def global_exception(exc_type, exc_value, exc_traceback):
+
+    logger.critical(
+        "ERRO FATAL",
+        exc_info=(exc_type, exc_value, exc_traceback)
+    )
+
+sys.excepthook = global_exception
 
 class MainApp(QWidget):
+    verificar_popup_erro_inpi = verificar_popup_erro_inpi
+    clicar_checkbox_recaptcha = clicar_checkbox_recaptcha
+    logger = logger
+    captcha_travado = captcha_travado
+    clicar_reload_duplo = clicar_reload_duplo
+    wait_element = wait_element
+    wait_clickable = wait_clickable
+    wait_title = wait_title
     iniciar_monitor_captcha =iniciar_monitor_captcha
     _loop_monitor_captcha =_loop_monitor_captcha
     _fluxo_pdf = _fluxo_pdf
@@ -116,6 +130,41 @@ class MainApp(QWidget):
     wait_for_download = wait_for_download
     def __init__(self):
         super().__init__()
+
+        fault_log = open(
+            "faulthandler.log",
+            "w",
+            encoding="utf-8"
+        )
+
+        faulthandler.enable(file=fault_log)
+
+        faulthandler.dump_traceback_later(
+            10,
+            repeat=True,
+            file=fault_log
+        )
+        process = psutil.Process(os.getpid())
+        
+        self.log_new(
+            f"RAM: {process.memory_info().rss / 1024 / 1024:.0f} MB"
+        )
+        self.solver_img = BASE_DIR / "solver_button.png"
+
+        print(self.solver_img)
+        print(self.solver_img.exists())
+        self.reload_img = BASE_DIR / "reload_button.png"
+        self.modal_try_again_img = BASE_DIR / "modal_try_again.png"
+        self.botao_try_again_img = BASE_DIR / "botao_try_again.png"
+        self.pyautogui_lock = threading.Lock()
+        for img in (
+            self.solver_img,
+            self.reload_img,
+            self.modal_try_again_img,
+            self.botao_try_again_img,
+        ):
+            if not Path(img).exists():
+                self.log_new(f"❌ Arquivo não encontrado: {img}")
         self.captcha_estado = {
             1: False,
             2: False,
@@ -150,7 +199,7 @@ class MainApp(QWidget):
         self.indice_processo = 0
         self.total_processos = 0
         self.processos_extraidos = 0
-
+        self.arquivo_descartados = "processos_descartados.txt"
         self.arquivo_concluidos = "processos_concluidos.txt"
         self.processos = []
         self.processos_concluidos = set()
@@ -161,6 +210,10 @@ class MainApp(QWidget):
 
         # 2️⃣ Criar UI PRIMEIRO
         self._criar_interface()
+
+        # restaura última posição salva
+        self.carregar_posicao_janela()
+
         self._iniciar_monitor_ip()
         # 3️⃣ Carregar dados DEPOIS
         self._carregar_processos_concluidos()
@@ -182,13 +235,28 @@ class MainApp(QWidget):
             self.combo_usuario_2.addItem(u["usuario"])
             self.combo_usuario_3.addItem(u["usuario"])
 
+        # conecta primeiro
+        self.combo_usuario.currentIndexChanged.connect(
+            self.on_usuario_selecionado
+        )
+
+        self.combo_usuario_2.currentIndexChanged.connect(
+            self.on_usuario_selecionado_2
+        )
+
+        self.combo_usuario_3.currentIndexChanged.connect(
+            self.on_usuario_selecionado_3
+        )
+
+        # depois restaura
+        self.carregar_configuracoes()
         # 🔌 CONECTA OS COMBOS AOS MÉTODOS
         self.combo_usuario.currentIndexChanged.connect(self.on_usuario_selecionado)
         self.combo_usuario_2.currentIndexChanged.connect(self.on_usuario_selecionado_2)
         self.combo_usuario_3.currentIndexChanged.connect(self.on_usuario_selecionado_3)
 
     def _criar_interface(self):
-        self.setWindowTitle("INPI - vs(1.3)")
+        self.setWindowTitle("INPI - vs(1.4)")
         self.setGeometry(50, 30, 700, 50)
 
         # 🔹 Layout principal
@@ -486,12 +554,18 @@ class MainApp(QWidget):
             lambda: QMessageBox.critical(self, titulo, msg)
         )
 
-    def log_new(self, mensagem):
-
-        pass
 
     def log(self, mensagem):
+
+        logger.error(mensagem)
+
         self.log_signal.emit(mensagem)
+
+    def log_new(self, mensagem):
+
+        logger.error(mensagem)
+
+
 
 
     def iniciar_selenium(self):
@@ -535,9 +609,12 @@ class MainApp(QWidget):
             self._ultimo_solver_click = 0
             self.iniciar_monitor_captcha()
         except Exception as e:
+
            QMessageBox.critical(self, "Erro", str(e))
 
-
+           logger.exception(
+               "Erro durante processamento",str(e)
+           )
 
 
 
@@ -599,18 +676,113 @@ class MainApp(QWidget):
         texto = f"Processos extraídos: {self.processos_extraidos} / {self.total_processos}"
         self.label_contador.setText(texto)
 
+    def carregar_posicao_janela(self):
+        arquivo = "window_pos.txt"
 
+        if os.path.exists(arquivo):
+            try:
+                with open(arquivo, "r") as f:
+                    x, y = map(int, f.read().split(","))
 
+                self.move(x, y)
+
+            except Exception as e:
+                logger.exception(
+                              f"Erro durante processamento  {e}"
+                           )
+
+                self.log_new(
+                    f"⚠️ Erro ao restaurar posição da janela: {e}"
+                )
+
+    def salvar_posicao_janela(self):
+        try:
+            with open("window_pos.txt", "w") as f:
+                f.write(f"{self.x()},{self.y()}")
+
+        except Exception as e:
+            logger.exception(
+                    f"Erro durante processamento : {e}"
+                )
+            self.log_new(
+                f"⚠️ Erro ao salvar posição da janela: {e}"
+            )
+    def salvar_configuracoes(self):
+        try:
+            with open("config_ui.txt", "w", encoding="utf-8") as f:
+                f.write(f"{self.combo_usuario.currentIndex()}\n")
+                f.write(f"{self.combo_usuario_2.currentIndex()}\n")
+                f.write(f"{self.combo_usuario_3.currentIndex()}\n")
+                f.write(f"{self.combo_timeout.currentText()}\n")
+    
+        except Exception as e:
+            self.log_new(f"⚠️ Erro ao salvar configurações: {e}")
+
+    def carregar_configuracoes(self):
+
+        try:
+
+            if not os.path.exists("config_ui.txt"):
+                return
+
+            with open("config_ui.txt", "r", encoding="utf-8") as f:
+                linhas = [x.strip() for x in f.readlines()]
+
+            if len(linhas) >= 4:
+                self.combo_usuario.setCurrentIndex(
+                    int(linhas[0])
+                )
+
+                self.combo_usuario_2.setCurrentIndex(
+                    int(linhas[1])
+                )
+
+                self.combo_usuario_3.setCurrentIndex(
+                    int(linhas[2])
+                )
+
+                self.combo_timeout.setCurrentText(
+                    linhas[3]
+                )
+
+                # força preencher usuário e senha
+                self.on_usuario_selecionado(
+                    self.combo_usuario.currentIndex()
+                )
+
+                self.on_usuario_selecionado_2(
+                    self.combo_usuario_2.currentIndex()
+                )
+
+                self.on_usuario_selecionado_3(
+                    self.combo_usuario_3.currentIndex()
+                )
+
+        except Exception as e:
+            self.log_new(
+                f"⚠️ Erro ao carregar configurações: {e}"
+            )
 
     def closeEvent(self, event):
+
+        # salva posição atual da janela
+        self.salvar_posicao_janela()
+        self.salvar_configuracoes()
+
         try:
             if hasattr(self, "selenium1"):
                 self.selenium1.stop()
+
             if hasattr(self, "selenium2"):
                 self.selenium2.stop()
+
             if hasattr(self, "selenium3"):
                 self.selenium3.stop()
-        except:
+
+        except Exception:
+            logger.exception(
+                "Erro durante processamento"
+            )
             pass
 
         event.accept()

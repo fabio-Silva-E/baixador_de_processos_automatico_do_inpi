@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import os
 import shutil
 import time
@@ -6,7 +6,9 @@ from pathlib import Path
 
 from PyQt5.QtCore import QTimer, QDateTime
 
+
 from config.paths import DOWNLOAD_DIR, BASE_DIR
+from core.captcha_manager import verificar_popup_erro_inpi
 
 
 def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
@@ -75,7 +77,7 @@ def _pdf_baixado_com_sucesso(self, worker_id, caminho_final):
         0, lambda: self._finalizar_processo_atual(worker_id)
     )
 
-def wait_for_download(self, worker_id, timeout=120):
+def wait_for_download(self, worker_id,   driver, timeout=60):
 
     pasta = BASE_DIR / "pdfs" / f"worker_{worker_id}"
 
@@ -90,7 +92,13 @@ def wait_for_download(self, worker_id, timeout=120):
     }
 
     while time.time() - inicio < timeout:
+        if verificar_popup_erro_inpi(self, driver):
 
+                self.log_new(
+                    f"❌ Popup INPI detectado durante download"
+                )
+
+                return None
         arquivos_pdf = list(pasta.glob("*.pdf"))
 
         for arquivo in arquivos_pdf:

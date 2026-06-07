@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed  --collect-all selenium --name=inpi_logos main.py               

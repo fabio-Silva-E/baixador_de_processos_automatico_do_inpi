@@ -6,7 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 
 from config.settings import WAIT_MEDIUM
-
+from core.network_utils import internet_disponivel, aguardar_rede, wait_element, wait_clickable
 
 def login_tres_abas(self):
     self.login_inpi(self.driver1, self.input_usuario, self.input_senha)
@@ -21,7 +21,19 @@ def login_tres_abas(self):
     self.log_new("✅ Login realizado nos tres navegadores")
 
 def login_inpi(self, driver, usuario_input, senha_input):
+    if not internet_disponivel():
+
+        self.log_new(
+            "🌐 Sem internet antes do login."
+        )
+
+        if not aguardar_rede():
+            raise Exception(
+                "Internet indisponível."
+            )
+
     driver.get("https://busca.inpi.gov.br/pePI/")
+
     time.sleep(3)
 
     driver.find_element(By.NAME, "T_Login").clear()
@@ -44,15 +56,23 @@ def garantir_login(self, driver):
     self.log_new(driver.session_id)
 
     self.log_new("ANTES DO FINDELEMENT")
+    self.log_new("LOGIN 2")
+
     try:
-        self.log_new("LOGIN 2")
-        # 🔎 Já está na página correta?
-        driver.find_element(By.NAME, "NumPedido")
-        self.log_new("FINDELEMENT OK")
-        self.log_new("✅ Usuário já está logado e na página correta.")
+        wait_element(
+            self,
+            driver,
+            (By.NAME, "NumPedido"),
+            timeout=5
+        )
+
+        self.log_new("✅ Usuário já está logado.")
         return
-    except:
+
+    except TimeoutException:
         pass
+
+
     self.log_new("🔐 Usuário não está na página correta. Garantindo login...")
     # ======================
     # LOGIN
@@ -74,47 +94,109 @@ def garantir_login(self, driver):
     # ======================
     # AGUARDA PÁGINA PRINCIPAL
     # ======================
-    WebDriverWait(driver, WAIT_MEDIUM).until(
-        EC.presence_of_element_located((By.TAG_NAME, "body"))
+    wait_element(
+        self,
+        driver,
+        (By.TAG_NAME, "body"),
+        timeout=WAIT_MEDIUM
     )
     self.log_new("🔑 Login realizado. Acessando menu Marcas...")
     # ======================
     # CLICA NO MENU MARCAS
     # ======================
     try:
-        menu_marcas = WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "area[href*='Pesquisa_num_processo.jsp']")
-            )
+        menu_marcas = wait_element(
+            self,
+            driver,
+            (
+                By.CSS_SELECTOR,
+                "area[href*='Pesquisa_num_processo.jsp']"
+            ),
+            timeout=WAIT_MEDIUM
         )
         # ⚠️ area precisa ser clicada via JS
         driver.execute_script("arguments[0].click();", menu_marcas)
     except TimeoutException:
-        raise Exception("❌ Não foi possível localizar o menu Marcas")
+
+        if not internet_disponivel():
+
+            self.log_new("🌐 Sem internet. Aguardando retorno...")
+
+            if not aguardar_rede():
+                raise Exception(
+                    "Internet indisponível por muito tempo."
+                )
+
+            self.log_new("🌐 Internet restabelecida.")
+
+            # tenta novamente localizar o elemento
+            menu_marcas = wait_element(
+                self,
+                driver,
+                (
+                    By.CSS_SELECTOR,
+                    "area[href*='Pesquisa_num_processo.jsp']"
+                ),
+                timeout=WAIT_MEDIUM
+            )
+
+            driver.execute_script(
+                "arguments[0].click();",
+                menu_marcas
+            )
+
+        else:
+            raise Exception(
+                "❌ Não foi possível localizar o menu Marcas"
+            )
     # ======================
     # AGUARDA CAMPO NumPedido
     # ======================
     try:
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.presence_of_element_located((By.NAME, "NumPedido"))
+        wait_element(
+            self,
+            driver,
+            (By.NAME, "NumPedido"),
+            timeout=WAIT_MEDIUM
         )
         self.log_new("✅ Página de pesquisa por processo carregada com sucesso.")
     except TimeoutException:
+
+        if not internet_disponivel():
+
+            self.log_new("🌐 Sem internet. Aguardando retorno...")
+
+            if not aguardar_rede():
+                raise Exception(
+                    "Internet indisponível por muito tempo."
+                )
+
+            self.log_new("🌐 Internet restabelecida.")
+
+            return self.garantir_login(driver)
+
         raise Exception("❌ Campo NumPedido não apareceu após acessar Marcas")
 
 def garantir_acesso_peticiones(self, driver):
 
     try:
-        self.log_new("🔍 Verificando necessidade de amplo acesso às petições...")
-
-        link_amplo = WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.presence_of_element_located((
-                By.XPATH,
-                "//a[contains(normalize-space(),'Clique aqui para ter acesso as petições')]"
-            ))
+        self.log_new(
+            "🔍 Verificando necessidade de amplo acesso às petições..."
         )
 
-        self.log_new("🔐 Acesso restrito detectado. Solicitando liberação...")
+        link_amplo = wait_element(
+            self,
+            driver,
+            (
+                By.XPATH,
+                "//a[contains(normalize-space(),'Clique aqui para ter acesso as petições')]"
+            ),
+            timeout=WAIT_MEDIUM
+        )
+
+        self.log_new(
+            "🔐 Acesso restrito detectado. Solicitando liberação..."
+        )
 
         driver.execute_script(
             "arguments[0].scrollIntoView(true);",
@@ -123,27 +205,43 @@ def garantir_acesso_peticiones(self, driver):
 
         time.sleep(0.5)
 
+        # IMPORTANTE
         link_amplo.click()
 
-        # aguarda popup/modal
+        self.log_new(
+            "🖱 Link de acesso clicado"
+        )
+
         WebDriverWait(driver, WAIT_MEDIUM).until(
             EC.title_contains("Finalidade do Acesso")
         )
 
-        self.log_new("🪟 Modal de acesso aberto")
-
-        # espera voltar
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.not_(EC.title_contains("Finalidade do Acesso"))
+        self.log_new(
+            "🪟 Modal de acesso aberto"
         )
 
-        self.log_new("✅ Acesso às petições liberado")
+        WebDriverWait(driver, WAIT_MEDIUM).until(
+            EC.not_(
+                EC.title_contains("Finalidade do Acesso")
+            )
+        )
+
+        self.log_new(
+            "✅ Acesso às petições liberado"
+        )
 
     except TimeoutException:
-        self.log_new("🔓 Nenhum bloqueio de petições detectado")
+
+        self.log_new(
+            "🔓 Nenhum bloqueio de petições detectado"
+        )
 
     except Exception as e:
-        self.log_new(f"❌ Erro em garantir_acesso_peticiones: {e}")
+
+        self.log_new(
+            f"❌ Erro em garantir_acesso_peticiones: {e}"
+        )
+
         raise
 
 def liberar_acesso_peticiones(self, driver):
@@ -161,17 +259,23 @@ def liberar_acesso_peticiones(self, driver):
                 break
         self.log_new("🪟 Popup de amplo acesso detectado")
         # aguarda checkbox aparecer
-        checkbox = WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.element_to_be_clickable((By.ID, "aceite"))
+        checkbox = wait_clickable(
+            self,
+            driver,
+            (By.ID, "aceite"),
+            timeout=WAIT_MEDIUM
         )
         checkbox.click()
         self.log_new("☑️ Checkbox de concordância marcado")
         # botão Enviar (input submit)
-        botao_enviar = WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.element_to_be_clickable((
+        botao_enviar = wait_clickable(
+            self,
+            driver,
+            (
                 By.XPATH,
                 "//input[@type='submit' and @name='Enviar']"
-            ))
+            ),
+            timeout=WAIT_MEDIUM
         )
         botao_enviar.click()
         self.log_new("📨 Formulário enviado")

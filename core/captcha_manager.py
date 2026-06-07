@@ -1,24 +1,23 @@
+import logging
+import traceback
 
 import pyautogui
 
 import time
 
-
+from pyautogui import ImageNotFoundException
 import requests
 import threading
 
 from config.settings import WAIT_MEDIUM, WAIT_SHORT, WAIT_LONG
 
-print(requests.get("https://api.ipify.org").text)
+
 from config.paths import  BASE_DIR
 
 from pathlib import Path
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (
-    NoSuchElementException, TimeoutException, WebDriverException,
-    ElementClickInterceptedException, UnexpectedAlertPresentException,
-    NoAlertPresentException
-)
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
+
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -63,8 +62,20 @@ def _loop_monitor_captcha(self):
                         f"🧩 Captcha ativo worker {worker_id}"
                     )
 
-            except:
+
+
+            except NoSuchElementException:
+
                 pass
+
+
+            except WebDriverException as e:
+
+                self.log_new(
+
+                    f"Worker {worker_id} perdeu conexão real: {e}"
+
+                )
 
         time.sleep(2)
 
@@ -136,35 +147,53 @@ def parar_solver_auto(self):
 
 
 def clicar_solver_button(self):
-    img_path = BASE_DIR / "solver_button.png"
 
-    if not img_path.exists():
-        self.log_new("❌ solver_button.png não encontrado")
-        return False
+    #img_path = BASE_DIR / "solver_button.png"
+    #
+    #if not img_path.exists():
+    #    self.log_new("❌ solver_button.png não encontrado")
+    #    return False
 
     try:
-        pos = pyautogui.locateCenterOnScreen(
-            str(img_path),  # 👈 CONVERSÃO OBRIGATÓRIA
-            confidence=0.78
-        )
+
+        with self.pyautogui_lock:
+
+            pos = pyautogui.locateCenterOnScreen(
+                str(self.solver_img),
+                confidence=0.78
+            )
 
         if pos:
-            pyautogui.moveTo(pos.x, pos.y, duration=0.3)
-            pyautogui.click()
-            self.log_new("🤖 Solver button clicado via PyAutoGUI")
+
+            with self.pyautogui_lock:
+                pyautogui.moveTo(
+                    pos.x,
+                    pos.y,
+                    duration=0.3
+                )
+
+                pyautogui.click()
+
+            self.log_new(
+                "🤖 Solver button clicado via PyAutoGUI"
+            )
+
             return True
-        else:
-            self.log_new("⚠️ Solver button não encontrado na tela")
-            return False
+
+        return False
 
     except Exception as e:
-        self.log_new(f"❌ Erro PyAutoGUI: {e}")
+
+        self.log_new(
+            f"Erro PyAutoGUI: {e}"
+        )
+
         return False
 
 def clicar_try_again(self, confidence=0.8):
 
-    modal_path = BASE_DIR / "modal_try_again.png"
-    botao_path = BASE_DIR / "botao_try_again.png"
+    modal_path = self.modal_try_again_img
+    botao_path = self.botao_try_again_img
 
     if not modal_path.exists() or not botao_path.exists():
         return False
@@ -201,7 +230,7 @@ def clicar_try_again(self, confidence=0.8):
         return False
 
     except Exception as e:
-        self.log_new(f"❌ Erro ao detectar Try Again: {e}")
+        self.log_new(repr(e))
         return False
 
 def tratar_modal_captcha(self, driver, worker_id):
@@ -218,6 +247,10 @@ def tratar_modal_captcha(self, driver, worker_id):
         return None
 
     self.captcha_estado[worker_id] = True
+    if not hasattr(self, "captcha_inicio"):
+        self.captcha_inicio = {}
+
+    self.captcha_inicio[worker_id] = time.time()
     try:
         self.log(f"[W{worker_id}] 🧩 aguardando modal...")
         # espera até o modal aparecer (ou timeout)
@@ -251,14 +284,32 @@ def tratar_modal_captcha(self, driver, worker_id):
                     checkbox = WebDriverWait(driver, WAIT_SHORT).until(
                         EC.element_to_be_clickable((By.ID, "recaptcha-anchor"))
                     )
-                    checkbox.click()
+                    #checkbox.click()
+                    try:
+                        driver.execute_script(
+                            "arguments[0].click();",
+                            checkbox
+                        )
+                    except Exception:
+
+                        checkbox = driver.find_element(
+                            By.ID,
+                            "recaptcha-anchor"
+                        )
+
+                        driver.execute_script(
+                            "arguments[0].click();",
+                            checkbox
+                        )
                     self.log_new("[captcha] checkbox clicado")
-                except Exception as e:
-                    self.log_new(f"[captcha] falha ao clicar checkbox: ")
+                except Exception:
+                    self.log_new(traceback.format_exc())
                 finally:
                     driver.switch_to.default_content()
             except Exception as e:
-                self.log_new(f"[captcha] erro switch_to.frame: ")
+                    self.log_new(
+                        f"[captcha] erro switch_to.frame: {e}"
+                    )
         else:
             self.log_new("[captcha] iframe do recaptcha não encontrado")
             self.log_new("[captcha] iframe não encontrado — aguardando novamente")
@@ -267,45 +318,135 @@ def tratar_modal_captcha(self, driver, worker_id):
         # Aqui aguardamos o token aparecer no DOM (g-recaptcha-response ou input#recaptcha-token)
         self.log_new("[captcha] aguardando token resolver (sem timeout)...")
         token = None
-        timeout = self.obter_timeout()  # segundos mudar para aumetar o tempo de espera para resolução do captcha
-        inicio = time.time()
-        while time.time() - inicio < timeout:
 
-            # 🔥 TRY AGAIN DETECTADO
-            if self.captcha_retry.get(worker_id):
-                self.log_new(
-                    f"🔄 Reiniciando captcha worker {worker_id}"
+        if not hasattr(self, "ultimo_reload"):
+            self.ultimo_reload = {}
+
+        inicio_token = time.time()
+
+        while time.time() - inicio_token < 90:
+
+            ultimo = self.ultimo_reload.get(
+                worker_id,
+                0
+            )
+
+            # captcha travado
+            if (
+                    self.captcha_travado(worker_id, limite=10)
+                    and time.time() - ultimo > 30
+            ):
+                self.log(
+                    f"⏱️ Captcha travado no worker {worker_id}"
                 )
+
+                self.clicar_reload_duplo()
+
+                self.log(
+                    f"🔄 Reload executado worker {worker_id}"
+                )
+
+                self.ultimo_reload[worker_id] = time.time()
+
+                self.captcha_inicio[worker_id] = time.time()
+
+            # Try Again
+            if self.captcha_retry.get(worker_id):
 
                 self.captcha_retry[worker_id] = False
 
-                self.captcha_estado[worker_id] = False
+                self.captcha_inicio[worker_id] = time.time()
 
-                return self.tratar_modal_captcha(
-                    driver,
-                    worker_id
+                token = None
+
+                self.log(
+                    f"🔄 Aguardando modal novamente worker {worker_id}"
                 )
+
+                try:
+
+                    WebDriverWait(
+                        driver,
+                        30
+                    ).until(
+                        EC.visibility_of_element_located(
+                            (
+                                By.ID,
+                                "janelaModalCaptchaDownload"
+                            )
+                        )
+                    )
+
+                    self.log(
+                        f"✅ Modal reapareceu worker {worker_id}"
+                    )
+
+                    self.clicar_checkbox_recaptcha(driver)
+
+                except Exception as e:
+
+                    self.log(
+                        f"❌ Modal não reapareceu: {e}"
+                    )
+
+                continue
+
+            # recaptcha-token
             try:
-                # 1) input hidden recaptcha-token (algumas implementações do INPI colocam o token aqui)
-                try:
-                    token_input = driver.find_element(By.ID, "recaptcha-token")
-                    val = token_input.get_attribute("value")
-                    if val and len(val) > 10:
-                        token = val
-                        break
-                except NoSuchElementException:
-                    pass
-                # 2) textarea.g-recaptcha-response
-                try:
-                    gr = driver.find_element(By.CSS_SELECTOR, "textarea.g-recaptcha-response")
-                    val2 = gr.get_attribute("value")
-                    if val2 and len(val2) > 10:
-                        token = val2
-                        break
-                except NoSuchElementException:
-                    pass
-            except Exception as e:
-                self.log_new("debug token check:")
+
+                token_input = driver.find_element(
+                    By.ID,
+                    "recaptcha-token"
+                )
+
+                val = token_input.get_attribute(
+                    "value"
+                )
+
+                if val and len(val) > 10:
+                    token = val
+
+                    self.log(
+                        f"✅ Token encontrado worker {worker_id}"
+                    )
+
+                    break
+
+            except NoSuchElementException:
+                pass
+
+            # g-recaptcha-response
+            try:
+
+                gr = driver.find_element(
+                    By.CSS_SELECTOR,
+                    "textarea.g-recaptcha-response"
+                )
+
+                val2 = gr.get_attribute(
+                    "value"
+                )
+
+                if val2 and len(val2) > 10:
+                    token = val2
+
+                    self.log(
+                        f"✅ Token encontrado worker {worker_id}"
+                    )
+
+                    break
+
+            except NoSuchElementException:
+                pass
+
+            except WebDriverException as e:
+
+                self.log(
+                    f"❌ Worker {worker_id} perdeu driver: {e}"
+                )
+
+                return None
+
             time.sleep(1)
         if token:
             self.log_new(f"[captcha] token detectado (len={len(token)})")
@@ -323,7 +464,9 @@ def tratar_modal_captcha(self, driver, worker_id):
                 """
                 driver.execute_script(script_set, token)
             except Exception as e:
-                self.log_new("Erro ao injetar token via JS:")
+                self.log_new(
+                    f"Erro ao injetar token via JS: {e}"
+                )
             # clica no botão #captchaButton (Download)
             try:
                 btn = WebDriverWait(driver, WAIT_MEDIUM).until(
@@ -331,11 +474,20 @@ def tratar_modal_captcha(self, driver, worker_id):
                 )
                 btn.click()
 
-                self.log(
-                    f"⏳ Worker {worker_id} aguardando download..."
-                )
+                for _ in range(20):
 
-                caminho_pdf = self.wait_for_download(worker_id)
+                    if verificar_popup_erro_inpi(self, driver):
+                        self.log(
+                            f"❌ Worker {worker_id} recebeu erro do INPI"
+                        )
+                        return None
+
+                    time.sleep(0.5)
+
+                caminho_pdf = self.wait_for_download(
+                    worker_id,
+                    driver
+                )
 
                 # 🔥 LOOP DE ESPERA EXTRA
                 timeout_pdf = time.time() + 120
@@ -355,7 +507,7 @@ def tratar_modal_captcha(self, driver, worker_id):
 
                     time.sleep(1)
 
-                    caminho_pdf = self.wait_for_download(worker_id)
+                    caminho_pdf = self.wait_for_download(worker_id, driver)
 
                 self.log(
                     f"❌ Worker {worker_id} download timeout"
@@ -370,9 +522,13 @@ def tratar_modal_captcha(self, driver, worker_id):
     except Exception as e:
         self.log_new(f"[W{worker_id}] erro captcha: {e}")
     finally:
-        self.captcha_estado[worker_id] = False
-        self.log_new("[captcha] finalizado")
 
+        self.captcha_estado[worker_id] = False
+
+        if hasattr(self, "captcha_inicio"):
+            self.captcha_inicio.pop(worker_id, None)
+
+        self.log_new("[captcha] finalizado")
 
 def selenium_get_recaptcha_iframe(self, driver):
     # procura iframe que contém 'anchor' (checkbox) ou 'api2/anchor'
@@ -425,3 +581,152 @@ def clicar_imagem(
         time.sleep(0.3)
     self.log_new(f"⚠️ Imagem não encontrada na tela: {caminho}")
     return None
+
+def clicar_reload_duplo(self, confidence=0.85):
+    caminho = self.reload_img
+
+    self.log(f"🔍 Procurando reload: {caminho}")
+
+    if not caminho.exists():
+        self.log("❌ reload_button.png não encontrado")
+        return False
+
+    try:
+
+        pos = pyautogui.locateCenterOnScreen(
+            str(caminho),
+            confidence=confidence
+        )
+
+        if not pos:
+            self.log("❌ Reload não encontrado na tela")
+            return False
+
+        self.log(
+            f"✅ Reload encontrado em X={pos.x} Y={pos.y}"
+        )
+
+        pyautogui.moveTo(
+            pos.x,
+            pos.y,
+            duration=0.2
+        )
+
+        pyautogui.doubleClick(
+            pos.x,
+            pos.y,
+            interval=0.3
+        )
+
+        self.log("🔄 Reload clicado 2x")
+
+        return True
+
+    except Exception as e:
+
+        #self.log(
+        #    f"❌ Erro reload: {e}"
+        #)
+
+        return False
+
+def captcha_travado(self, worker_id, limite=10):
+
+    inicio = self.captcha_inicio.get(worker_id)
+
+    if inicio is None:
+        return False
+
+    return (time.time() - inicio) > limite
+
+
+def excecao_thread(args):
+
+    logging.critical(
+        f"ERRO FATAL THREAD: {args.thread.name}",
+        exc_info=(
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback
+        )
+    )
+
+threading.excepthook = excecao_thread
+
+def clicar_checkbox_recaptcha(self, driver):
+
+    iframe = self.selenium_get_recaptcha_iframe(driver)
+
+    if not iframe:
+        self.log_new("❌ iframe recaptcha não encontrado")
+        return False
+
+    try:
+
+        driver.switch_to.default_content()
+
+        driver.switch_to.frame(iframe)
+
+        checkbox = WebDriverWait(
+            driver,
+            WAIT_SHORT
+        ).until(
+            EC.element_to_be_clickable(
+                (By.ID, "recaptcha-anchor")
+            )
+        )
+
+        driver.execute_script(
+            "arguments[0].click();",
+            checkbox
+        )
+
+        self.log_new("✅ Checkbox recaptcha clicado")
+
+        return True
+
+    except Exception as e:
+
+        self.log_new(
+            f"Erro clicar checkbox: {e}"
+        )
+
+        return False
+
+    finally:
+
+        driver.switch_to.default_content()
+
+def verificar_popup_erro_inpi(self, driver):
+
+    try:
+
+        elementos = driver.find_elements(
+            By.XPATH,
+            "//*[contains(text(),'Erro inesperado ao gerar PDF')]"
+        )
+
+        if elementos:
+
+            self.log_new(
+                "❌ Popup HTML do INPI detectado"
+            )
+
+            try:
+
+                botao_ok = driver.find_element(
+                    By.XPATH,
+                    "//button[contains(., 'OK')]"
+                )
+
+                botao_ok.click()
+
+            except Exception:
+                pass
+
+            return True
+
+    except Exception:
+        pass
+
+    return False

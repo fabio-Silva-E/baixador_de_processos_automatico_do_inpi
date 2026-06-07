@@ -9,7 +9,54 @@ from selenium.webdriver.support.wait import WebDriverWait
 from openpyxl import Workbook, load_workbook
 from config.paths import EXCEL_PROCESSOS_PATH
 from config.settings import WAIT_MEDIUM, URL_DESTINO
+from core.network_utils import aguardar_rede, internet_disponivel
 
+
+
+def wait_clickable(self, driver, locator, timeout=30):
+
+    try:
+        return WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable(locator)
+        )
+
+    except TimeoutException:
+
+        if not internet_disponivel():
+
+            self.log_new(
+                "🌐 Internet caiu durante espera."
+            )
+
+            if aguardar_rede():
+
+                return WebDriverWait(driver, timeout).until(
+                    EC.element_to_be_clickable(locator)
+                )
+
+        raise
+
+def wait_element(self, driver, locator, timeout=30):
+
+    try:
+        return WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located(locator)
+        )
+
+    except TimeoutException:
+
+        if not internet_disponivel():
+
+            self.log_new(
+                "🌐 Timeout causado por falta de internet."
+            )
+
+            if aguardar_rede():
+                return WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located(locator)
+                )
+
+        raise
 
 def tentar_clicar_botao_pdf(
     self,
@@ -24,13 +71,13 @@ def tentar_clicar_botao_pdf(
             f"📄 Worker {worker_id} procurando PDF"
         )
 
-        elemento = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable(
-                (
-                    By.XPATH,
-                    "//div[@id='389' or @id='394']/ancestor::tr//img[contains(@class,'salvaDocumento')]"
-                )
-            )
+        elemento = self.wait_clickable(
+            driver,
+            (
+                By.XPATH,
+                "//div[@id='389' or @id='394']/ancestor::tr//img[contains(@class,'salvaDocumento')]"
+            ),
+            timeout=20
         )
 
 
@@ -49,13 +96,9 @@ def tentar_clicar_botao_pdf(
             f"🖱 Worker {worker_id} clicou PDF"
         )
 
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.presence_of_element_located(
-                (
-                    By.ID,
-                    "janelaModalCaptchaDownload"
-                )
-            )
+        self.wait_element(
+            driver,
+            (By.ID, "janelaModalCaptchaDownload")
         )
 
         self.log_new(
@@ -83,11 +126,43 @@ def selecionar_processo(self, item):
     self.log(f"📌 Processo selecionado: {numero}")
 def _registrar_processo_concluido(self, numero):
     if not numero:
-        self.log_new("⚠️ Tentativa de registrar processo concluído com número inválido.")
+        self.log_new(
+            "⚠️ Tentativa de registrar processo concluído inválido."
+        )
         return
-    with open(self.arquivo_concluidos, "a", encoding="utf-8") as f:
+
+    with open(
+        self.arquivo_concluidos,
+        "a",
+        encoding="utf-8"
+    ) as f:
         f.write(str(numero) + "\n")
+
     self.processos_concluidos.add(numero)
+def _registrar_processo_descartado(self, numero):
+
+    if not numero:
+        self.log_new(
+            "⚠️ Tentativa de registrar processo descartado inválido."
+        )
+        return
+
+    with open(
+        self.arquivo_descartados,
+        "a",
+        encoding="utf-8"
+    ) as f:
+        f.write(str(numero) + "\n")
+
+    if not hasattr(self, "processos_descartados"):
+        self.processos_descartados = set()
+
+    self.processos_descartados.add(numero)
+
+    self.log_new(
+        f"🚫 Processo descartado registrado: {numero}"
+    )
+
 
 def atualizar_lista_processos(self):
     self.lista_processos.clear()
@@ -101,6 +176,7 @@ def atualizar_lista_processos(self):
         ws = wb.active
         header = ws["A1"].value
         if header != "Numero_Processo":
+        #if header != "processo":
             raise ValueError(
                 "A coluna A deve se chamar 'Numero_Processo'"
             )
@@ -125,20 +201,61 @@ def atualizar_lista_processos(self):
         )
         self.log_new(f"Falha ao carregar processos do Excel")
 
-def possui_servico_389_ou_394(self, driver) -> bool:
-    """
-    Verifica se existe serviço 389 ou 394 na tabela de PDFs
-    """
-    try:
-        driver.find_element(
-            By.XPATH,
-            "//a[normalize-space()='389' or normalize-space()='394']"
-        )
+
+#def possui_servico_389_ou_394(self, driver):
+#    """
+#    Retorna:
+#    (True, None) → pode processar
+#    (False, motivo) → deve pular e registrar descartado
+#    """
+#
+#    try:
+#        elementos = driver.find_elements(
+#            By.XPATH,
+#            "//a[normalize-space()]"
+#        )
+#
+#        servicos_encontrados = {
+#            el.text.strip() for el in elementos if el.text.strip()
+#        }
+#
+#        self.log(f"📄 Serviços encontrados:")
+#
+#        bloqueio = {
+#            "161", "304", "414", "530",
+#            "301", "303", "305",
+#            "401", "507"
+#        }
+#
+#        intersecao = servicos_encontrados.intersection(bloqueio)
+#
+#        if intersecao:
+#            motivo = f"bloqueio_servico_{','.join(intersecao)}"
+#            self.log_new(f"⏭️ BLOQUEADO: {motivo}")
+#            return False, motivo
+#
+#        if "389" in servicos_encontrados or "394" in servicos_encontrados:
+#            self.log("📄 Serviço 389/394 detectado")
+#            return True, None
+#
+#        return False, "sem_servico_relevante"
+#
+#    except NoSuchElementException:
+#        return False, "servico_nao_encontrado"
+
+def possui_servico_389_ou_394(self, driver):
+
+    elementos = driver.find_elements(
+        By.XPATH,
+        "//a[normalize-space()='389' or normalize-space()='394']"
+    )
+
+    if elementos:
         self.log("📄 Serviço 389 ou 394 detectado")
         return True
-    except NoSuchElementException:
-        self.log_new("📄 Serviço 389/394 NÃO encontrado")
-        return False
+
+    self.log_new("📄 Serviço 389/394 NÃO encontrado")
+    return False
 
 def _repetir_processo_atual(self, worker_id, motivo):
 
@@ -215,12 +332,22 @@ def abrir_detalhe_processo(self, driver, worker_id):
         # ==========================================
         # PESQUISA
         # ==========================================
-        driver.get(URL_DESTINO)
+        try:
+            driver.get(URL_DESTINO)
 
-        campo = WebDriverWait(driver, 30).until(
-            EC.visibility_of_element_located(
-                (By.NAME, "NumPedido")
-            )
+        except Exception:
+
+            if not aguardar_rede():
+                raise Exception(
+                    "Internet indisponível."
+                )
+
+            driver.get(URL_DESTINO)
+
+        campo = self.wait_element(
+            driver,
+            (By.NAME, "NumPedido"),
+            timeout=30
         )
 
         campo.clear()
@@ -228,13 +355,13 @@ def abrir_detalhe_processo(self, driver, worker_id):
         campo.submit()
 
         # detalhe
-        link = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    "a[href*='detail']"
-                )
-            )
+        link = self.wait_clickable(
+            driver,
+            (
+                By.CSS_SELECTOR,
+                "a[href*='detail']"
+            ),
+            timeout=20
         )
 
         driver.execute_script(
@@ -242,24 +369,27 @@ def abrir_detalhe_processo(self, driver, worker_id):
             link
         )
 
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located(
-                (By.TAG_NAME, "body")
-            )
+        self.wait_element(
+            driver,
+            (By.TAG_NAME, "body"),
+            timeout=20
         )
 
         time.sleep(2)
 
         # serviço
-        if not self.possui_servico_389_ou_394(driver):
-            self.log(
-                f"⏭️ Worker {worker_id} sem serviço"
-            )
+        ok = self.possui_servico_389_ou_394(driver)
 
+        if not ok:
+
+            # 🚀 sempre conclui
             self._registrar_processo_concluido(numero)
-
-            self._finalizar_processo_atual(worker_id)
-
+            self.processos_extraidos += 1
+            self._atualizar_contador_ui()
+            # 🚫 se for bloqueio, também registra descartado
+            #if motivo and "bloqueio" in motivo:
+            #    self._registrar_processo_descartado(numero)
+            #self._finalizar_processo_atual(worker_id)
             return
         # ==========================================
         # PETIÇÕES
@@ -292,15 +422,31 @@ def abrir_detalhe_processo(self, driver, worker_id):
             worker_id,
             caminho_pdf
         )
+        self._registrar_processo_concluido(numero)
 
+        self.processos_extraidos += 1
+        self._atualizar_contador_ui()
         # finalizar
-        self._finalizar_processo_atual(worker_id)
-
+        #self._finalizar_processo_atual(worker_id)
+        return
     except Exception as e:
 
         import traceback
 
         self.log_new(traceback.format_exc())
+
+        if not internet_disponivel():
+
+            self.log_new(
+
+                "🌐 Internet caiu durante processamento."
+
+            )
+
+            if aguardar_rede():
+                self.log_new(
+                    "🌐 Internet voltou."
+                )
 
         self._repetir_processo_atual(
             worker_id,
@@ -349,3 +495,4 @@ def _fluxo_pdf(self, driver, worker_id, numero):
     )
 
     return caminho_pdf
+
