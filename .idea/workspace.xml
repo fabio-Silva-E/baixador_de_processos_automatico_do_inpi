@@ -4,11 +4,7 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="91e5e1ce-9268-4bc2-b8e3-beed1cbd2b2a" name="Changes" comment="upload complete project">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/download_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/download_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/processo_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/processo_manager.py" afterDir="false" />
-    </list>
+    <list default="true" id="91e5e1ce-9268-4bc2-b8e3-beed1cbd2b2a" name="Changes" comment="upload complete project" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -131,7 +127,7 @@
       <workItem from="1780067649208" duration="22129000" />
       <workItem from="1780409317060" duration="13164000" />
       <workItem from="1780493079165" duration="2189000" />
-      <workItem from="1780755865234" duration="22700000" />
+      <workItem from="1780755865234" duration="23545000" />
     </task>
     <task id="LOCAL-00001" summary="complete code">
       <option name="closed" value="true" />

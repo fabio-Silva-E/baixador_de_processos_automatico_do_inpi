@@ -32,9 +32,9 @@ class SeleniumWorker(QThread):
             self.app.abrir_detalhe_processo(driver, self.worker_id)
 
             self.app.log(f"🏁 Worker {self.worker_id} finalizou")
-            self.worker_finished.emit(
-                self.worker_id
-            )
+            # ✅ worker_finished NÃO é emitido aqui —
+            # abrir_detalhe_processo já chama _finalizar ou _repetir diretamente.
+            # Emitir aqui causava corrida entre o retry e o finalizar.
         except Exception:
             import traceback
             print(traceback.format_exc())

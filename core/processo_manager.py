@@ -306,6 +306,17 @@ def _repetir_processo_atual(self, worker_id, motivo):
         f"⏳ Worker {worker_id} aguardará 3s antes retry"
     )
 
+    # ✅ recoloca o processo na frente da fila para retry
+    if worker_id == 1:
+        self.processos_1.appendleft(numero)
+    elif worker_id == 2:
+        self.processos_2.appendleft(numero)
+    elif worker_id == 3:
+        self.processos_3.appendleft(numero)
+
+    self.numero_atual[worker_id] = None
+    self.processando[worker_id] = False
+
     QTimer.singleShot(
         3000,
         lambda: self._processar_proximo(worker_id)
@@ -382,14 +393,14 @@ def abrir_detalhe_processo(self, driver, worker_id):
 
         if not ok:
 
-            # 🚀 sempre conclui
+            # sem serviço 389/394 — registra e finaliza normalmente
             self._registrar_processo_concluido(numero)
             self.processos_extraidos += 1
             self._atualizar_contador_ui()
-            # 🚫 se for bloqueio, também registra descartado
-            #if motivo and "bloqueio" in motivo:
-            #    self._registrar_processo_descartado(numero)
-            #self._finalizar_processo_atual(worker_id)
+            QTimer.singleShot(
+                0,
+                lambda wid=worker_id: self._finalizar_processo_atual(wid)
+            )
             return
         # ==========================================
         # PETIÇÕES
@@ -446,8 +457,11 @@ def abrir_detalhe_processo(self, driver, worker_id):
         )
         self.processos_extraidos += 1
         self._atualizar_contador_ui()
-        # finalizar
-        #self._finalizar_processo_atual(worker_id)
+        # ✅ avança para o próximo processo após sucesso
+        QTimer.singleShot(
+            0,
+            lambda wid=worker_id: self._finalizar_processo_atual(wid)
+        )
         return
     except Exception as e:
 
