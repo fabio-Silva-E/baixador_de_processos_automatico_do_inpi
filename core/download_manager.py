@@ -10,7 +10,6 @@ from PyQt5.QtCore import QTimer, QDateTime
 from config.paths import DOWNLOAD_DIR, BASE_DIR
 from core.captcha_manager import verificar_popup_erro_inpi
 
-
 def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
     print(f"📄 RENOMEANDO worker {worker_id}")
     print("DEBUG RENAME")
@@ -53,19 +52,21 @@ def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
         )
 
         # ✅ Verifica se o PDF realmente existe antes de registrar
+        # ✅ Retorna o caminho se o PDF existe
         if novo_caminho.exists():
-            self._registrar_processo_concluido(numero)
+            return str(novo_caminho)  # ← retorna para quem chamou
 
-        else:
-            self.log_new(
-                f"⚠️ Worker {worker_id} — PDF não encontrado após renomear, processo NÃO registrado."
-            )
-
+        self.log_new(
+            f"⚠️ Worker {worker_id} — PDF não encontrado após renomear."
+        )
+        return None
 
     except Exception as e:
         self.log_new(
             f"❌ Worker {worker_id} — Erro ao renomear PDF: {e}"
         )
+        return None
+
 
 
 def _pdf_baixado_com_sucesso(self, worker_id, caminho_final):

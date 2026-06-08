@@ -413,17 +413,37 @@ def abrir_detalhe_processo(self, driver, worker_id):
             worker_id,
             numero
         )
-
+        self.log_new(
+            f"DEBUG caminho_pdf={caminho_pdf}"
+        )
         if not caminho_pdf:
             raise Exception("PDF não baixado")
 
+        self.log_new(
+            f"DEBUG iniciando rename {caminho_pdf}"
+        )
+
         # renomear
-        self._renomear_pdf_para_processo(
+        novo_pdf = self._renomear_pdf_para_processo(
             worker_id,
             caminho_pdf
         )
-        self._registrar_processo_concluido(numero)
 
+        self.log_new(
+            f"✅ PDF final: {novo_pdf}"
+        )
+
+        # ✅ Só registra como concluído se o rename foi bem-sucedido
+        if novo_pdf:
+            self._registrar_processo_concluido(numero)
+        else:
+            self.log_new(
+                f"⚠️ Worker {worker_id} — rename falhou, processo {numero} NÃO registrado."
+            )
+            raise Exception("Falha ao renomear PDF")
+        self.log_new(
+            f"DEBUG registrando concluído {numero}"
+        )
         self.processos_extraidos += 1
         self._atualizar_contador_ui()
         # finalizar
@@ -452,6 +472,9 @@ def abrir_detalhe_processo(self, driver, worker_id):
             worker_id,
             str(e)
         )
+from pathlib import Path
+import time
+
 def _fluxo_pdf(self, driver, worker_id, numero):
 
     self.log(
@@ -482,17 +505,46 @@ def _fluxo_pdf(self, driver, worker_id, numero):
         f"📄 Worker {worker_id} verificando arquivo: {caminho_pdf}"
     )
 
-    if not caminho_pdf.exists():
+    # aguarda até 60 segundos pelo download
+    for tentativa in range(60):
+
+        if caminho_pdf.exists():
+
+            self.log(
+                f"✅ Worker {worker_id} arquivo encontrado após {tentativa}s"
+            )
+
+            break
+
+        time.sleep(1)
+
+    else:
 
         self.log(
-            f"❌ Worker {worker_id} arquivo inexistente"
+            f"❌ Worker {worker_id} arquivo inexistente: {caminho_pdf}"
         )
 
         return None
 
+    # Chrome ainda pode estar escrevendo
+    crdownload = Path(str(caminho_pdf) + ".crdownload")
+
+    for tentativa in range(30):
+
+        if not crdownload.exists():
+            break
+
+        self.log(
+            f"⏳ Worker {worker_id} aguardando fim download..."
+        )
+
+        time.sleep(1)
+
     self.log(
         f"✅ Worker {worker_id} PDF OK"
     )
-
+    self.log_new(
+        f"DEBUG PDF FINAL: {caminho_pdf}"
+    )
     return caminho_pdf
 
