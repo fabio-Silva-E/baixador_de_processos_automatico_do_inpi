@@ -1,102 +1,305 @@
-
 import os
 import time
+import threading
+from pathlib import Path
 
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import (
-    NoSuchElementException, TimeoutException, WebDriverException,
-    ElementClickInterceptedException, UnexpectedAlertPresentException,
-    NoAlertPresentException
+    NoSuchElementException
 )
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+
+
 from config.paths import PROFILE_PATH, DOWNLOAD_DIR
 from config.settings import WAIT_MEDIUM
 
 
 class SeleniumController:
+    NAVEGADOR = "edge"
     def __init__(self):
         self.driver = None
+        self.driver_lock = threading.RLock()
+        # =========================
+        # 🔥 MONITOR DE ABAS (FIX)
+        # =========================
+        self.monitor_abas_ativo = False
+        self.monitor_abas_thread = None
 
+        self.bloquear_fechamento_abas = False
+        self.worker_id = None
 
+    # ==================================================
+    # 🧠 MONITOR DE ABAS (ON/OFF SEGURO)
+    # ==================================================
+    def iniciar_monitor_abas(self):
+
+        # já rodando
+        if self.monitor_abas_thread and self.monitor_abas_thread.is_alive():
+            return
+
+        self.monitor_abas_ativo = True
+
+        def monitor():
+
+            while self.monitor_abas_ativo:
+
+                if not self.driver:
+                    time.sleep(1)
+                    continue
+
+                try:
+                    abas = self.driver.window_handles
+
+                    print(
+                        f"MONITOR worker={self.worker_id} "
+                        f"abas={len(abas)} ativo={self.monitor_abas_ativo}"
+                    )
+
+                    if len(abas) > 1 and not self.bloquear_fechamento_abas:
+                        self.fechar_abas_extras()
+
+                except Exception as e:
+                    print(f"[MONITOR ERROR] {e}")
+                    break
+
+                time.sleep(1)
+
+        self.monitor_abas_thread = threading.Thread(
+            target=monitor,
+            daemon=True
+        )
+
+        self.monitor_abas_thread.start()
+
+    def parar_monitor_abas(self):
+        self.monitor_abas_ativo = False
+
+        if self.monitor_abas_thread:
+            self.monitor_abas_thread.join(timeout=2)
+            self.monitor_abas_thread = None
 
     def start(self):
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.options import Options
-
-        chrome_options = Options()
-
+        navegador = SeleniumController.NAVEGADOR
         worker_id = getattr(self, "worker_id", 1)
 
-        # 📁 PERFIL ÚNICO POR WORKER
-        profile_path = os.path.join(PROFILE_PATH, f"profile_{worker_id}")
-        os.makedirs(profile_path, exist_ok=True)
-        chrome_options.add_argument(f"--user-data-dir={profile_path}")
+        profile_path = Path(PROFILE_PATH) / f"profile_{worker_id}"
+        profile_path.mkdir(parents=True, exist_ok=True)
 
-        # 📁 DOWNLOAD ÚNICO POR WORKER
-        download_dir = os.path.join(DOWNLOAD_DIR, f"worker_{worker_id}")
-        os.makedirs(download_dir, exist_ok=True)
+        download_dir = Path(DOWNLOAD_DIR) / f"worker_{worker_id}"
+        download_dir.mkdir(parents=True, exist_ok=True)
 
         prefs = {
-            "download.default_directory": os.path.abspath(download_dir),
+            "download.default_directory": str(download_dir.resolve()),
             "download.prompt_for_download": False,
             "plugins.always_open_pdf_externally": True,
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
+            "profile.password_manager_leak_detection": False
         }
-        chrome_options.add_experimental_option("prefs", prefs)
-
-        # Flags que você já usa
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-features=PasswordLeakDetection")
-        chrome_options.add_argument("--disable-save-password-bubble")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")
-        chrome_options.add_argument("--verbose")
-        chrome_options.add_argument("--no-first-run")
-        chrome_options.add_argument("--disable-software-rasterizer")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--no-sandbox")
-
-        service = Service()
-        service.start_timeout = 60
 
         self._aguardar_rede_estavel()
 
-        try:
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.set_window_size(600, 720)
+        if navegador == "edge":
+            from selenium.webdriver.edge.service import Service
+            from selenium.webdriver.edge.options import Options
+            options = Options()
+            options.add_argument(f"--user-data-dir={profile_path}")
+            options.add_argument("--profile-directory=Default")
+            options.add_experimental_option("prefs", prefs)
+            self._aplicar_flags_comuns(options)
+            self.driver = webdriver.Edge(service=Service(), options=options)
 
-            # 🔥 guarda para uso futuro (downloads, logs, etc)
-            self.download_dir = download_dir
+        elif navegador == "chrome":
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.chrome.options import Options
+            options = Options()
+            options.add_argument(f"--user-data-dir={profile_path}")
+            options.add_argument("--profile-directory=Default")
+            options.add_experimental_option("prefs", prefs)
+            self._aplicar_flags_comuns(options)
+            self.driver = webdriver.Chrome(service=Service(), options=options)
 
-            return self.driver
-        except Exception as e:
-            raise RuntimeError(f"Erro ao iniciar ChromeDriver: {e}")
 
+
+
+        elif navegador == "firefox":
+
+            from selenium.webdriver.firefox.service import Service
+
+            from selenium.webdriver.firefox.options import Options
+
+            from webdriver_manager.firefox import GeckoDriverManager
+
+            from config.paths import FIREFOX_PROFILE_PATH, FIREFOX_BIN_PATHS
+
+            # localiza o Firefox
+
+            firefox_bin = next((p for p in FIREFOX_BIN_PATHS if Path(p).exists()), None)
+
+            if not firefox_bin:
+                raise RuntimeError("❌ Firefox não encontrado.")
+
+            # perfil fixo por worker — já tem o Buster instalado permanentemente
+
+            perfil_fixo = FIREFOX_PROFILE_PATH / f"profile_{worker_id}"
+
+            perfil_fixo.mkdir(parents=True, exist_ok=True)
+
+            options = Options()
+
+            options.binary_location = firefox_bin
+
+            # aponta para o perfil fixo com Buster já instalado
+
+            options.add_argument("-profile")
+
+            options.add_argument(str(perfil_fixo))
+
+            # preferências de download
+
+            options.set_preference("browser.download.folderList", 2)
+
+            options.set_preference("browser.download.dir", str(download_dir.resolve()))
+
+            options.set_preference("browser.download.useDownloadDir", True)
+
+            options.set_preference("browser.download.manager.showWhenStarting", False)
+
+            options.set_preference("browser.download.manager.focusWhenStarting", False)
+
+            options.set_preference("browser.helperApps.neverAsk.saveToDisk",
+
+                                   "application/pdf,application/octet-stream")
+
+            options.set_preference("pdfjs.disabled", True)
+
+            options.set_preference("browser.helperApps.alwaysAsk.force", False)
+
+            options.set_preference("browser.download.manager.alertOnEXEOpen", False)
+
+            options.set_preference("browser.download.manager.closeWhenDone", True)
+
+            # evita aviso de extensão não assinada
+
+            options.set_preference("xpinstall.signatures.required", False)
+
+            self.driver = webdriver.Firefox(
+
+                service=Service(GeckoDriverManager().install()),
+
+                options=options
+
+            )
+
+
+        elif navegador == "brave":
+
+            from selenium.webdriver.chrome.service import Service
+
+            from selenium.webdriver.chrome.options import Options
+
+            brave_paths = [
+
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+
+                r"C:\Users\fs271\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe",  # ← adicionado
+
+            ]
+
+            brave_bin = next((p for p in brave_paths if Path(p).exists()), None)
+
+            if not brave_bin:
+                raise RuntimeError("❌ Brave não encontrado.")
+
+            options = Options()
+
+            options.binary_location = brave_bin
+
+            options.add_argument(f"--user-data-dir={profile_path}")
+
+            options.add_argument("--profile-directory=Default")
+
+            options.add_experimental_option("prefs", prefs)
+
+            self._aplicar_flags_comuns(options)
+
+            self.driver = webdriver.Chrome(service=Service(), options=options)
+        else:
+            raise ValueError(f"Navegador desconhecido: {navegador}")
+
+        self.download_dir = download_dir
+        self.profile_path = profile_path
+        self.iniciar_monitor_abas()
+        self.driver.set_window_size(600, 720)
+        return self.driver
+
+
+
+    def _aplicar_flags_comuns(self, options):
+        """Flags comuns a Edge, Chrome e Brave."""
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+
+    # ==================================================
+    # 🌐 REDE
+    # ==================================================
     def _aguardar_rede_estavel(self, timeout=30):
-        inicio = time.time()
+        start = time.time()
 
-        while time.time() - inicio < timeout:
+        while time.time() - start < timeout:
             try:
                 r = requests.get("https://www.google.com", timeout=5)
                 if r.status_code == 200:
                     return
-            except requests.exceptions.RequestException:
+            except:
                 pass
-            time.sleep(3)  # Aguardar mais tempo
-        raise RuntimeError("❌ A rede não estabilizou após a troca de VPN.")
 
+            time.sleep(3)
+
+        raise RuntimeError("❌ Rede instável")
+
+    # ==================================================
+    # 🛑 STOP
+    # ==================================================
     def stop(self):
         try:
+            self.parar_monitor_abas()
             if self.driver:
                 self.driver.quit()
-        except Exception:
+        except:
             pass
+
+    # ==================================================
+    # 🔥 FECHAR ABAS EXTRAS
+    # ==================================================
+    def fechar_abas_extras(self):
+
+        try:
+            abas = self.driver.window_handles
+
+            if len(abas) <= 1:
+                return
+
+            main = abas[0]
+
+            for aba in abas[1:]:
+                try:
+                    self.driver.switch_to.window(aba)
+                    self.driver.close()
+                except:
+                    pass
+
+            self.driver.switch_to.window(main)
+
+        except Exception as e:
+            print(f"Erro fechar abas: {e}")
 
     def wait_for_element(self, by, value, timeout=WAIT_MEDIUM):
         return WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located((by, value)))
@@ -171,3 +374,28 @@ class SeleniumController:
         return False
 
 
+    def fechar_abas_extras(self):
+
+         try:
+
+             abas = self.driver.window_handles
+
+             if len(abas) <= 1:
+                 return
+
+             aba_principal = abas[0]
+
+             for aba in abas[1:]:
+
+                 try:
+                     self.driver.switch_to.window(aba)
+                     self.driver.close()
+
+                 except Exception:
+                     pass
+
+             self.driver.switch_to.window(aba_principal)
+
+         except Exception as e:
+
+             print(f"Erro fechar abas: {e}")

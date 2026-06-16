@@ -1,4 +1,4 @@
-from datetime import datetime
+import datetime
 import os
 import shutil
 import time
@@ -6,9 +6,8 @@ from pathlib import Path
 
 from PyQt5.QtCore import QTimer, QDateTime
 
-
 from config.paths import DOWNLOAD_DIR, BASE_DIR
-from core.captcha_manager import verificar_popup_erro_inpi
+
 
 def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
     print(f"📄 RENOMEANDO worker {worker_id}")
@@ -52,21 +51,19 @@ def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
         )
 
         # ✅ Verifica se o PDF realmente existe antes de registrar
-        # ✅ Retorna o caminho se o PDF existe
         if novo_caminho.exists():
-            return str(novo_caminho)  # ← retorna para quem chamou
+            self._registrar_processo_concluido(numero)
 
-        self.log_new(
-            f"⚠️ Worker {worker_id} — PDF não encontrado após renomear."
-        )
-        return None
+        else:
+            self.log_new(
+                f"⚠️ Worker {worker_id} — PDF não encontrado após renomear, processo NÃO registrado."
+            )
+
 
     except Exception as e:
         self.log_new(
             f"❌ Worker {worker_id} — Erro ao renomear PDF: {e}"
         )
-        return None
-
 
 
 def _pdf_baixado_com_sucesso(self, worker_id, caminho_final):
@@ -78,7 +75,7 @@ def _pdf_baixado_com_sucesso(self, worker_id, caminho_final):
         0, lambda: self._finalizar_processo_atual(worker_id)
     )
 
-def wait_for_download(self, worker_id,   driver, timeout=60):
+def wait_for_download(self, worker_id, timeout=120):
 
     pasta = BASE_DIR / "pdfs" / f"worker_{worker_id}"
 
@@ -93,13 +90,7 @@ def wait_for_download(self, worker_id,   driver, timeout=60):
     }
 
     while time.time() - inicio < timeout:
-        if verificar_popup_erro_inpi(self, driver):
 
-                self.log_new(
-                    f"❌ Popup INPI detectado durante download"
-                )
-
-                return None
         arquivos_pdf = list(pasta.glob("*.pdf"))
 
         for arquivo in arquivos_pdf:
