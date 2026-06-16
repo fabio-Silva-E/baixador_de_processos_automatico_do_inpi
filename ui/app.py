@@ -1,16 +1,14 @@
-
 import os
 import threading
 import time
 import psutil
 import os
 
-
 from config.paths import DOWNLOAD_DIR
 from config.settings import URL_INPI
 from core.selenium_controller import SeleniumController
 
-from config.paths import  BASE_DIR
+from config.paths import BASE_DIR
 from collections import deque
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
@@ -20,8 +18,6 @@ from PyQt5.QtWidgets import (
     QLabel, QApplication, QTextEdit, QMessageBox, QComboBox
 )
 from PyQt5.QtCore import QTimer, QDateTime, pyqtSignal
-
-
 
 # suas funções internas
 
@@ -53,8 +49,8 @@ from core.processo_manager import (
     _fluxo_pdf
 )
 from core.captcha_manager import (
-   iniciar_monitor_captcha,
-   _loop_monitor_captcha,
+    iniciar_monitor_captcha,
+    _loop_monitor_captcha,
     iniciar_solver_auto,
     detectar_worker_com_captcha,
     _loop_solver_button,
@@ -63,42 +59,38 @@ from core.captcha_manager import (
     clicar_try_again,
     tratar_modal_captcha,
     selenium_get_recaptcha_iframe,
-    clicar_imagem,clicar_reload_duplo,
+    clicar_imagem, clicar_reload_duplo,
     captcha_travado,
-    clicar_checkbox_recaptcha,
-    verificar_popup_erro_inpi
+    verificar_sessao_apos_download,
+    sessao_expirada,
+    aguardar_botao_download
 )
 import faulthandler
 
-from core.network_utils import (
-    wait_element,
-    wait_clickable,
-    wait_title
-)
+
 import sys
 import traceback
 from utils.log_utils import logger
 
-def global_exception(exc_type, exc_value, exc_traceback):
 
+def global_exception(exc_type, exc_value, exc_traceback):
     logger.critical(
         "ERRO FATAL",
         exc_info=(exc_type, exc_value, exc_traceback)
     )
 
+
 sys.excepthook = global_exception
 
+
 class MainApp(QWidget):
-    verificar_popup_erro_inpi = verificar_popup_erro_inpi
-    clicar_checkbox_recaptcha = clicar_checkbox_recaptcha
-    logger = logger
+    aguardar_botao_download = aguardar_botao_download
     captcha_travado = captcha_travado
+    verificar_sessao_apos_download = verificar_sessao_apos_download
+    sessao_expirada = sessao_expirada
     clicar_reload_duplo = clicar_reload_duplo
-    wait_element = wait_element
-    wait_clickable = wait_clickable
-    wait_title = wait_title
-    iniciar_monitor_captcha =iniciar_monitor_captcha
-    _loop_monitor_captcha =_loop_monitor_captcha
+    iniciar_monitor_captcha = iniciar_monitor_captcha
+    _loop_monitor_captcha = _loop_monitor_captcha
     _fluxo_pdf = _fluxo_pdf
     iniciar_solver_auto = iniciar_solver_auto
     detectar_worker_com_captcha = detectar_worker_com_captcha
@@ -128,9 +120,14 @@ class MainApp(QWidget):
     _renomear_pdf_para_processo = _renomear_pdf_para_processo
     _pdf_baixado_com_sucesso = _pdf_baixado_com_sucesso
     wait_for_download = wait_for_download
+
     def __init__(self):
         super().__init__()
-
+        self._driver_locks = {
+                    1: threading.RLock(),
+                    2: threading.RLock(),
+                    3: threading.RLock(),
+                }
         fault_log = open(
             "faulthandler.log",
             "w",
@@ -145,7 +142,9 @@ class MainApp(QWidget):
             file=fault_log
         )
         process = psutil.Process(os.getpid())
-        
+        self.monitor_abas_ativo = False
+        self.monitor_abas_thread = None
+
         self.log_new(
             f"RAM: {process.memory_info().rss / 1024 / 1024:.0f} MB"
         )
@@ -157,11 +156,12 @@ class MainApp(QWidget):
         self.modal_try_again_img = BASE_DIR / "modal_try_again.png"
         self.botao_try_again_img = BASE_DIR / "botao_try_again.png"
         self.pyautogui_lock = threading.Lock()
+
         for img in (
-            self.solver_img,
-            self.reload_img,
-            self.modal_try_again_img,
-            self.botao_try_again_img,
+                self.solver_img,
+                self.reload_img,
+                self.modal_try_again_img,
+                self.botao_try_again_img,
         ):
             if not Path(img).exists():
                 self.log_new(f"❌ Arquivo não encontrado: {img}")
@@ -195,7 +195,6 @@ class MainApp(QWidget):
             3: None
         }
 
-
         self.indice_processo = 0
         self.total_processos = 0
         self.processos_extraidos = 0
@@ -205,8 +204,6 @@ class MainApp(QWidget):
         self.processos_concluidos = set()
 
         self.vpn = VPNManager()
-
-
 
         # 2️⃣ Criar UI PRIMEIRO
         self._criar_interface()
@@ -225,9 +222,9 @@ class MainApp(QWidget):
             if p not in self.processos_concluidos
         ]
         for wid in (1, 2, 3):
-           pasta = Path(DOWNLOAD_DIR) / f"worker_{wid}"
-           pasta.mkdir(parents=True, exist_ok=True)
-           self.download_dirs[wid] = pasta
+            pasta = Path(DOWNLOAD_DIR) / f"worker_{wid}"
+            pasta.mkdir(parents=True, exist_ok=True)
+            self.download_dirs[wid] = pasta
         self.carregar_usuarios_excel()
 
         for u in self.usuarios:
@@ -269,6 +266,11 @@ class MainApp(QWidget):
 
         self.label_ip = QLabel("🌍 IP: ---")
         coluna_login.addWidget(self.label_ip)
+        self.btn_monitor_abas = QPushButton("🧠 Monitor abas: OFF")
+        self.btn_monitor_abas.setCheckable(True)
+        self.btn_monitor_abas.clicked.connect(self.toggle_monitor_abas)
+
+        coluna_login.addWidget(self.btn_monitor_abas)
         # ===== dropdown de timeout =====
         coluna_login.addWidget(QLabel("Timeout Captcha (segundos)"))
 
@@ -283,7 +285,6 @@ class MainApp(QWidget):
         self.combo_timeout.setCurrentText("120")
 
         coluna_login.addWidget(self.combo_timeout)
-
 
         # ===== USUÁRIO 1 =====
         coluna_login.addWidget(QLabel("Login Aba 1"))
@@ -353,12 +354,17 @@ class MainApp(QWidget):
 
         self.btn_buscar = QPushButton("▶ Iniciar extração")
         self.btn_buscar.clicked.connect(self.iniciar_processamento_em_lote)
-
-        self.btn_parar = QPushButton("⏹ Parar")
-        self.btn_parar.clicked.connect(self.parar_processamento)
-
         coluna_processos.addWidget(self.btn_buscar)
-        coluna_processos.addWidget(self.btn_parar)
+
+
+        coluna_processos.addWidget(QLabel("🌐 Navegador"))
+        self.combo_navegador = QComboBox()
+        self.combo_navegador.addItems(["Edge", "Chrome", "Firefox", "Brave"])
+        self.combo_navegador.currentTextChanged.connect(self.trocar_navegador)
+        coluna_processos.addWidget(self.combo_navegador)
+
+
+
 
         self.label_status = QLabel("Status: idle")
         coluna_processos.addWidget(self.label_status)
@@ -409,6 +415,17 @@ class MainApp(QWidget):
         ip = self.vpn.ip_atual()
         self.label_ip.setText(f"🌍 IP: {ip}")
 
+    def trocar_navegador(self, texto):
+        from core.selenium_controller import SeleniumController
+        mapa = {
+            "Edge": "edge",
+            "Chrome": "chrome",
+            "Firefox": "firefox",
+            "Brave": "brave",
+        }
+        SeleniumController.NAVEGADOR = mapa.get(texto, "edge")
+        self.log(f"🌐 Navegador selecionado: {texto} — terá efeito ao reabrir os browsers")
+
     def trocar_vpn(self):
         self.log_new("BOTÃO CLICADO")
         self.label_ip.setText("🔄 Trocando VPN...")
@@ -433,7 +450,6 @@ class MainApp(QWidget):
         self.input_usuario_3.setText(user["usuario"])
         self.input_senha_3.setText(user["senha"])
 
-
     def on_usuario_selecionado(self, index):
         if index == 0:
             self.input_usuario.clear()
@@ -443,7 +459,6 @@ class MainApp(QWidget):
         user = self.usuarios[index - 1]  # 👈 deslocamento
         self.input_usuario.setText(user["usuario"])
         self.input_senha.setText(user["senha"])
-
 
     def parar_processamento(self):
         if not self.loop_ativo:
@@ -469,10 +484,6 @@ class MainApp(QWidget):
                 numero = linha.strip()
                 if numero:
                     self.processos_concluidos.add(numero)
-
-
-
-
 
     from collections import deque
 
@@ -518,8 +529,6 @@ class MainApp(QWidget):
         self._processar_proximo(2)
         self._processar_proximo(3)
 
-
-
     def carregar_usuarios_excel(self):
         self.usuarios = []  # lista de dicts
 
@@ -540,8 +549,6 @@ class MainApp(QWidget):
                 "senha": str(row[1]).strip()
             })
 
-
-
     def ui_warning(self, titulo, msg):
         QTimer.singleShot(
             0,
@@ -554,7 +561,6 @@ class MainApp(QWidget):
             lambda: QMessageBox.critical(self, titulo, msg)
         )
 
-
     def log(self, mensagem):
 
         logger.error(mensagem)
@@ -564,9 +570,6 @@ class MainApp(QWidget):
     def log_new(self, mensagem):
 
         logger.error(mensagem)
-
-
-
 
     def iniciar_selenium(self):
         self.log("Iniciando 3 Chromes independentes...")
@@ -579,7 +582,7 @@ class MainApp(QWidget):
             if hasattr(self, "driver2") and self.driver2:
                 self.selenium2.stop()
 
-            if hasattr(self, "driver3") and self.driver2:
+            if hasattr(self, "driver3") and self.driver3:
                 self.selenium3.stop()
 
             time.sleep(3)
@@ -596,7 +599,7 @@ class MainApp(QWidget):
             self.driver2 = self.selenium2.start()
             self.driver2.get(URL_INPI)
 
-           # 🔹 DRIVER 3
+            # 🔹 DRIVER 3
             self.selenium3 = SeleniumController()
             self.selenium3.worker_id = 3
             self.driver3 = self.selenium3.start()
@@ -605,18 +608,16 @@ class MainApp(QWidget):
             self.log_new("✅ Três Chromes iniciados com sucesso")
 
             self.iniciar_solver_auto()
-            #self.iniciar_try_again_auto()
+            # self.iniciar_try_again_auto()
             self._ultimo_solver_click = 0
             self.iniciar_monitor_captcha()
         except Exception as e:
 
-           QMessageBox.critical(self, "Erro", str(e))
+            QMessageBox.critical(self, "Erro", str(e))
 
-           logger.exception(
-               "Erro durante processamento",str(e)
-           )
-
-
+            logger.exception(
+                "Erro durante processamento", str(e)
+            )
 
     def _usuario_atual(self, worker_id):
         if worker_id == 1:
@@ -627,7 +628,6 @@ class MainApp(QWidget):
             return self.input_usuario_3
         return None
 
-
     def _senha_atual(self, worker_id):
         if worker_id == 1:
             return self.input_senha
@@ -637,19 +637,11 @@ class MainApp(QWidget):
             return self.input_senha_3
         return None
 
-
-
-
-
-
     def ui_toast(self, mensagem, tempo=2000):
         QTimer.singleShot(
             0,
             lambda m=mensagem, t=tempo: mostrar_toast(m, t)
         )
-
-
-
 
     def _selenium_por_worker(self, worker_id):
         if worker_id == 1:
@@ -661,16 +653,11 @@ class MainApp(QWidget):
         else:
             raise ValueError("Worker inválido")
 
-
     def obter_timeout(self) -> int:
         try:
             return int(self.combo_timeout.currentText())
         except ValueError:
             return 120  # fallback seguro
-
-
-
-
 
     def _atualizar_contador_ui(self):
         texto = f"Processos extraídos: {self.processos_extraidos} / {self.total_processos}"
@@ -688,8 +675,8 @@ class MainApp(QWidget):
 
             except Exception as e:
                 logger.exception(
-                              f"Erro durante processamento  {e}"
-                           )
+                    f"Erro durante processamento  {e}"
+                )
 
                 self.log_new(
                     f"⚠️ Erro ao restaurar posição da janela: {e}"
@@ -702,11 +689,12 @@ class MainApp(QWidget):
 
         except Exception as e:
             logger.exception(
-                    f"Erro durante processamento : {e}"
-                )
+                f"Erro durante processamento : {e}"
+            )
             self.log_new(
                 f"⚠️ Erro ao salvar posição da janela: {e}"
             )
+
     def salvar_configuracoes(self):
         try:
             with open("config_ui.txt", "w", encoding="utf-8") as f:
@@ -714,7 +702,7 @@ class MainApp(QWidget):
                 f.write(f"{self.combo_usuario_2.currentIndex()}\n")
                 f.write(f"{self.combo_usuario_3.currentIndex()}\n")
                 f.write(f"{self.combo_timeout.currentText()}\n")
-    
+
         except Exception as e:
             self.log_new(f"⚠️ Erro ao salvar configurações: {e}")
 
@@ -787,11 +775,30 @@ class MainApp(QWidget):
 
         event.accept()
 
+    def toggle_monitor_abas(self):
+
+        ativo = self.btn_monitor_abas.isChecked()
+
+        self.btn_monitor_abas.setText(
+            "🧠 Monitor abas: ON" if ativo else "🧠 Monitor abas: OFF"
+        )
+
+        self.log_new("🟢 Monitor ATIVADO" if ativo else "🔴 Monitor DESATIVADO")
+
+        for selenium in (self.selenium1, self.selenium2, self.selenium3):
+            if selenium:
+                selenium.monitor_abas_ativo = ativo
+
+                if ativo:
+                    selenium.iniciar_monitor_abas()
+                else:
+                    selenium.parar_monitor_abas()
 
 # Se você quer testar este arquivo standalone (sem main.py),
 # comente a importação em main.py e execute este módulo diretamente.
 if __name__ == "__main__":
     import sys
+
     app = QApplication(sys.argv)
     w = MainApp()
     w.show()
