@@ -36,7 +36,6 @@ class SeleniumController:
     # 🧠 MONITOR DE ABAS (ON/OFF SEGURO)
     # ==================================================
     def iniciar_monitor_abas(self):
-
         # já rodando
         if self.monitor_abas_thread and self.monitor_abas_thread.is_alive():
             return
@@ -44,49 +43,29 @@ class SeleniumController:
         self.monitor_abas_ativo = True
 
         def monitor():
-
             while self.monitor_abas_ativo:
-
                 if not self.driver:
-                    time.sleep(1)
+                    time.sleep(0.5)
                     continue
-
                 try:
                     abas = self.driver.window_handles
-
-                    print(
-                        f"MONITOR worker={self.worker_id} "
-                        f"abas={len(abas)} ativo={self.monitor_abas_ativo}"
-                    )
-
                     if len(abas) > 1 and not self.bloquear_fechamento_abas:
                         self.fechar_abas_extras()
-
                 except Exception as e:
                     print(f"[MONITOR ERROR] {e}")
                     break
+                time.sleep(0.5)  # ← 500ms entre checagens
 
-                time.sleep(1)
-
-        self.monitor_abas_thread = threading.Thread(
-            target=monitor,
-            daemon=True
-        )
-
+        # ← ESTAS DUAS LINHAS ESTAVAM FALTANDO:
+        self.monitor_abas_thread = threading.Thread(target=monitor, daemon=True)
         self.monitor_abas_thread.start()
-
-    def parar_monitor_abas(self):
-        self.monitor_abas_ativo = False
-
-        if self.monitor_abas_thread:
-            self.monitor_abas_thread.join(timeout=2)
-            self.monitor_abas_thread = None
 
     def start(self):
         navegador = SeleniumController.NAVEGADOR
         worker_id = getattr(self, "worker_id", 1)
 
-        profile_path = Path(PROFILE_PATH) / f"profile_{worker_id}"
+        # ← perfil separado por NAVEGADOR e worker
+        profile_path = Path(PROFILE_PATH) / navegador / f"profile_{worker_id}"
         profile_path.mkdir(parents=True, exist_ok=True)
 
         download_dir = Path(DOWNLOAD_DIR) / f"worker_{worker_id}"
@@ -96,7 +75,10 @@ class SeleniumController:
             "download.default_directory": str(download_dir.resolve()),
             "download.prompt_for_download": False,
             "plugins.always_open_pdf_externally": True,
-            "profile.password_manager_leak_detection": False
+            "profile.password_manager_leak_detection": False,
+            "download.open_pdf_in_system_reader": False,
+            "download.extensions_to_open": "",
+            "download.manager.showWhenStarting": False,
         }
 
         self._aguardar_rede_estavel()
@@ -121,119 +103,66 @@ class SeleniumController:
             self._aplicar_flags_comuns(options)
             self.driver = webdriver.Chrome(service=Service(), options=options)
 
-
-
-
-        elif navegador == "firefox":
-
-            from selenium.webdriver.firefox.service import Service
-
-            from selenium.webdriver.firefox.options import Options
-
-            from webdriver_manager.firefox import GeckoDriverManager
-
-            from config.paths import FIREFOX_PROFILE_PATH, FIREFOX_BIN_PATHS
-
-            # localiza o Firefox
-
-            firefox_bin = next((p for p in FIREFOX_BIN_PATHS if Path(p).exists()), None)
-
-            if not firefox_bin:
-                raise RuntimeError("❌ Firefox não encontrado.")
-
-            # perfil fixo por worker — já tem o Buster instalado permanentemente
-
-            perfil_fixo = FIREFOX_PROFILE_PATH / f"profile_{worker_id}"
-
-            perfil_fixo.mkdir(parents=True, exist_ok=True)
-
-            options = Options()
-
-            options.binary_location = firefox_bin
-
-            # aponta para o perfil fixo com Buster já instalado
-
-            options.add_argument("-profile")
-
-            options.add_argument(str(perfil_fixo))
-
-            # preferências de download
-
-            options.set_preference("browser.download.folderList", 2)
-
-            options.set_preference("browser.download.dir", str(download_dir.resolve()))
-
-            options.set_preference("browser.download.useDownloadDir", True)
-
-            options.set_preference("browser.download.manager.showWhenStarting", False)
-
-            options.set_preference("browser.download.manager.focusWhenStarting", False)
-
-            options.set_preference("browser.helperApps.neverAsk.saveToDisk",
-
-                                   "application/pdf,application/octet-stream")
-
-            options.set_preference("pdfjs.disabled", True)
-
-            options.set_preference("browser.helperApps.alwaysAsk.force", False)
-
-            options.set_preference("browser.download.manager.alertOnEXEOpen", False)
-
-            options.set_preference("browser.download.manager.closeWhenDone", True)
-
-            # evita aviso de extensão não assinada
-
-            options.set_preference("xpinstall.signatures.required", False)
-
-            self.driver = webdriver.Firefox(
-
-                service=Service(GeckoDriverManager().install()),
-
-                options=options
-
-            )
-
-
         elif navegador == "brave":
-
             from selenium.webdriver.chrome.service import Service
-
             from selenium.webdriver.chrome.options import Options
-
             brave_paths = [
-
                 r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-
                 r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
-
-                r"C:\Users\fs271\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe",  # ← adicionado
-
+                r"C:\Users\fs271\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe",
             ]
-
             brave_bin = next((p for p in brave_paths if Path(p).exists()), None)
-
             if not brave_bin:
                 raise RuntimeError("❌ Brave não encontrado.")
-
             options = Options()
-
             options.binary_location = brave_bin
-
             options.add_argument(f"--user-data-dir={profile_path}")
-
             options.add_argument("--profile-directory=Default")
-
             options.add_experimental_option("prefs", prefs)
-
             self._aplicar_flags_comuns(options)
-
             self.driver = webdriver.Chrome(service=Service(), options=options)
+
+        elif navegador == "firefox":
+            from selenium.webdriver.firefox.service import Service
+            from selenium.webdriver.firefox.options import Options
+            from webdriver_manager.firefox import GeckoDriverManager
+            from config.paths import FIREFOX_BIN_PATHS
+            firefox_bin = next((p for p in FIREFOX_BIN_PATHS if Path(p).exists()), None)
+            if not firefox_bin:
+                raise RuntimeError("❌ Firefox não encontrado.")
+            # ← Firefox usa pasta própria separada dos outros
+            firefox_profile = Path(PROFILE_PATH) / "firefox" / f"profile_{worker_id}"
+            firefox_profile.mkdir(parents=True, exist_ok=True)
+            options = Options()
+            options.binary_location = firefox_bin
+            options.add_argument("-profile")
+            options.add_argument(str(firefox_profile))
+            options.set_preference("browser.download.folderList", 2)
+            options.set_preference("browser.download.dir", str(download_dir.resolve()))
+            options.set_preference("browser.download.useDownloadDir", True)
+            options.set_preference("browser.download.manager.showWhenStarting", False)
+            options.set_preference("browser.download.manager.focusWhenStarting", False)
+            options.set_preference("browser.helperApps.neverAsk.saveToDisk",
+                                   "application/pdf,application/octet-stream")
+            options.set_preference("pdfjs.disabled", True)
+            options.set_preference("browser.helperApps.alwaysAsk.force", False)
+            options.set_preference("browser.download.manager.alertOnEXEOpen", False)
+            options.set_preference("browser.download.manager.closeWhenDone", True)
+            options.set_preference("xpinstall.signatures.required", False)
+            options.set_preference("browser.download.animateNotifications", False)
+            options.set_preference("browser.download.panel.shown", False)
+            self.driver = webdriver.Firefox(
+                service=Service(GeckoDriverManager().install()),
+                options=options
+            )
+            profile_path = firefox_profile  # ← atualiza para salvar corretamente abaixo
+
         else:
             raise ValueError(f"Navegador desconhecido: {navegador}")
 
         self.download_dir = download_dir
         self.profile_path = profile_path
-        self.iniciar_monitor_abas()
+        #self.iniciar_monitor_abas()
         self.driver.set_window_size(600, 720)
         return self.driver
 
@@ -280,23 +209,25 @@ class SeleniumController:
     # 🔥 FECHAR ABAS EXTRAS
     # ==================================================
     def fechar_abas_extras(self):
-
         try:
             abas = self.driver.window_handles
-
             if len(abas) <= 1:
                 return
 
-            main = abas[0]
+            aba_principal = abas[0]
 
             for aba in abas[1:]:
                 try:
                     self.driver.switch_to.window(aba)
+                    url = self.driver.current_url
+                    # ← não fecha aba de downloads — wait_for_download cuida disso
+                    if "downloads" in url:
+                        continue
                     self.driver.close()
-                except:
+                except Exception:
                     pass
 
-            self.driver.switch_to.window(main)
+            self.driver.switch_to.window(aba_principal)
 
         except Exception as e:
             print(f"Erro fechar abas: {e}")
@@ -374,28 +305,28 @@ class SeleniumController:
         return False
 
 
-    def fechar_abas_extras(self):
-
-         try:
-
-             abas = self.driver.window_handles
-
-             if len(abas) <= 1:
-                 return
-
-             aba_principal = abas[0]
-
-             for aba in abas[1:]:
-
-                 try:
-                     self.driver.switch_to.window(aba)
-                     self.driver.close()
-
-                 except Exception:
-                     pass
-
-             self.driver.switch_to.window(aba_principal)
-
-         except Exception as e:
-
-             print(f"Erro fechar abas: {e}")
+    #def fechar_abas_extras(self):
+    #
+    #     try:
+    #
+    #         abas = self.driver.window_handles
+    #
+    #         if len(abas) <= 1:
+    #             return
+    #
+    #         aba_principal = abas[0]
+    #
+    #         for aba in abas[1:]:
+    #
+    #             try:
+    #                 self.driver.switch_to.window(aba)
+    #                 self.driver.close()
+    #
+    #             except Exception:
+    #                 pass
+    #
+    #         self.driver.switch_to.window(aba_principal)
+    #
+    #     except Exception as e:
+    #
+    #         print(f"Erro fechar abas: {e}")

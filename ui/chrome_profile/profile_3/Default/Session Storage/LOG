@@ -1,3 +1,45 @@
-2026/06/04-23:17:32.571 3100 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\Session Storage/MANIFEST-000001
-2026/06/04-23:17:32.572 3100 Recovering log #9
-2026/06/04-23:17:32.574 3100 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\Session Storage/000009.log 
+2026/06/17-20:21:38.000 75c Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\Session Storage/MANIFEST-000001
+2026/06/17-20:21:38.001 75c Recovering log #633
+2026/06/17-20:21:38.003 75c Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\Session Storage/000633.log 
+2026/06/17-20:29:35.568 3598 Level-0 table #639: started
+2026/06/17-20:29:35.571 3598 Level-0 table #639: 45048 bytes OK
+2026/06/17-20:29:35.572 3598 Delete type=0 #633
+2026/06/17-20:42:27.680 3598 Level-0 table #641: started
+2026/06/17-20:42:27.685 3598 Level-0 table #641: 52513 bytes OK
+2026/06/17-20:42:27.686 3598 Delete type=0 #638
+2026/06/17-20:53:23.684 3598 Level-0 table #643: started
+2026/06/17-20:53:23.686 3598 Level-0 table #643: 48715 bytes OK
+2026/06/17-20:53:23.687 3598 Delete type=0 #640
+2026/06/17-21:06:38.506 3598 Level-0 table #645: started
+2026/06/17-21:06:38.519 3598 Level-0 table #645: 56172 bytes OK
+2026/06/17-21:06:38.521 3598 Delete type=0 #642
+2026/06/17-21:06:38.521 3598 Compacting 4@0 + 1@1 files
+2026/06/17-21:06:38.527 3598 Generated table #646@0: 7714 keys, 160710 bytes
+2026/06/17-21:06:38.527 3598 Compacted 4@0 + 1@1 files => 160710 bytes
+2026/06/17-21:06:38.527 3598 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/17-21:06:38.528 3598 Delete type=2 #636
+2026/06/17-21:06:38.528 3598 Delete type=2 #639
+2026/06/17-21:06:38.528 3598 Delete type=2 #641
+2026/06/17-21:06:38.528 3598 Delete type=2 #643
+2026/06/17-21:06:38.528 3598 Delete type=2 #645
+2026/06/17-21:24:24.869 3598 Level-0 table #648: started
+2026/06/17-21:24:24.883 3598 Level-0 table #648: 47127 bytes OK
+2026/06/17-21:24:24.884 3598 Delete type=0 #644
+2026/06/17-21:53:33.995 3598 Level-0 table #650: started
+2026/06/17-21:53:33.997 3598 Level-0 table #650: 41410 bytes OK
+2026/06/17-21:53:33.998 3598 Delete type=0 #647
+2026/06/17-22:12:32.858 3598 Level-0 table #652: started
+2026/06/17-22:12:32.860 3598 Level-0 table #652: 47546 bytes OK
+2026/06/17-22:12:32.861 3598 Delete type=0 #649
+2026/06/17-22:25:46.370 3598 Level-0 table #654: started
+2026/06/17-22:25:46.374 3598 Level-0 table #654: 51699 bytes OK
+2026/06/17-22:25:46.375 3598 Delete type=0 #651
+2026/06/17-22:25:46.376 3598 Compacting 4@0 + 1@1 files
+2026/06/17-22:25:46.383 3598 Generated table #655@0: 7934 keys, 162467 bytes
+2026/06/17-22:25:46.383 3598 Compacted 4@0 + 1@1 files => 162467 bytes
+2026/06/17-22:25:46.384 3598 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/17-22:25:46.385 3598 Delete type=2 #646
+2026/06/17-22:25:46.385 3598 Delete type=2 #648
+2026/06/17-22:25:46.385 3598 Delete type=2 #650
+2026/06/17-22:25:46.385 3598 Delete type=2 #652
+2026/06/17-22:25:46.385 3598 Delete type=2 #654

@@ -1,3 +1,30 @@
-2026/06/04-23:17:29.780 7300 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Session Storage/MANIFEST-000001
-2026/06/04-23:17:29.781 7300 Recovering log #6
-2026/06/04-23:17:29.783 7300 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Session Storage/000006.log 
+2026/06/17-20:21:34.454 4b4c Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Session Storage/MANIFEST-000001
+2026/06/17-20:21:34.455 4b4c Recovering log #615
+2026/06/17-20:21:34.456 4b4c Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Session Storage/000615.log 
+2026/06/17-20:40:19.795 2928 Level-0 table #620: started
+2026/06/17-20:40:19.800 2928 Level-0 table #620: 43719 bytes OK
+2026/06/17-20:40:19.802 2928 Delete type=0 #615
+2026/06/17-21:00:10.145 2928 Level-0 table #622: started
+2026/06/17-21:00:10.161 2928 Level-0 table #622: 47882 bytes OK
+2026/06/17-21:00:10.163 2928 Delete type=0 #619
+2026/06/17-21:13:57.367 2928 Level-0 table #624: started
+2026/06/17-21:13:57.371 2928 Level-0 table #624: 51888 bytes OK
+2026/06/17-21:13:57.372 2928 Delete type=0 #621
+2026/06/17-21:40:17.635 2928 Level-0 table #626: started
+2026/06/17-21:40:17.648 2928 Level-0 table #626: 46018 bytes OK
+2026/06/17-21:40:17.649 2928 Delete type=0 #623
+2026/06/17-21:40:17.650 2928 Compacting 4@0 + 1@1 files
+2026/06/17-21:40:17.655 2928 Generated table #627@0: 7264 keys, 143204 bytes
+2026/06/17-21:40:17.655 2928 Compacted 4@0 + 1@1 files => 143204 bytes
+2026/06/17-21:40:17.655 2928 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/17-21:40:17.656 2928 Delete type=2 #617
+2026/06/17-21:40:17.656 2928 Delete type=2 #620
+2026/06/17-21:40:17.656 2928 Delete type=2 #622
+2026/06/17-21:40:17.656 2928 Delete type=2 #624
+2026/06/17-21:40:17.656 2928 Delete type=2 #626
+2026/06/17-22:10:35.021 2928 Level-0 table #629: started
+2026/06/17-22:10:35.024 2928 Level-0 table #629: 47801 bytes OK
+2026/06/17-22:10:35.025 2928 Delete type=0 #625
+2026/06/17-22:22:46.055 2928 Level-0 table #631: started
+2026/06/17-22:22:46.057 2928 Level-0 table #631: 53356 bytes OK
+2026/06/17-22:22:46.058 2928 Delete type=0 #628

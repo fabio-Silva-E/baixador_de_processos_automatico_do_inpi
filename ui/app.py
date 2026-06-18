@@ -7,7 +7,7 @@ import os
 from config.paths import DOWNLOAD_DIR
 from config.settings import URL_INPI
 from core.selenium_controller import SeleniumController
-
+from core.licenca import dias_restantes
 from config.paths import BASE_DIR
 from collections import deque
 from pathlib import Path
@@ -84,6 +84,7 @@ sys.excepthook = global_exception
 
 
 class MainApp(QWidget):
+    dias_restantes = dias_restantes
     aguardar_botao_download = aguardar_botao_download
     captcha_travado = captcha_travado
     verificar_sessao_apos_download = verificar_sessao_apos_download
@@ -266,8 +267,25 @@ class MainApp(QWidget):
 
         self.label_ip = QLabel("🌍 IP: ---")
         coluna_login.addWidget(self.label_ip)
-        self.btn_monitor_abas = QPushButton("🧠 Monitor abas: OFF")
+        # ── licença ─────────────────────────────────────────
+        dias = dias_restantes()
+        if dias is not None:
+            if dias <= 7:
+                cor = "color: red; font-weight: bold;"
+                texto = f"⚠️ Licença expira em {dias} dias!"
+            elif dias <= 30:
+                cor = "color: orange;"
+                texto = f"🔑 Licença válida por {dias} dias"
+            else:
+                cor = "color: green;"
+                texto = f"✅ Licença válida por {dias} dias"
+            self.label_licenca = QLabel(texto)
+            self.label_licenca.setStyleSheet(cor)
+            coluna_login.addWidget(self.label_licenca)
+        # Em _criar_interface, após criar o botão:
+        self.btn_monitor_abas = QPushButton("🧠 Monitor abas: ON")
         self.btn_monitor_abas.setCheckable(True)
+        self.btn_monitor_abas.setChecked(True)  # ← começa ligado
         self.btn_monitor_abas.clicked.connect(self.toggle_monitor_abas)
 
         coluna_login.addWidget(self.btn_monitor_abas)
@@ -285,6 +303,13 @@ class MainApp(QWidget):
         self.combo_timeout.setCurrentText("120")
 
         coluna_login.addWidget(self.combo_timeout)
+
+        coluna_login.addWidget(QLabel("⏱ Intervalo Reload (segundos)"))
+        self.combo_intervalo_reload = QComboBox()
+        self.combo_intervalo_reload.addItems(["1", "2", "3", "5", "8", "10"])
+        self.combo_intervalo_reload.setCurrentText("3")
+        coluna_login.addWidget(self.combo_intervalo_reload)
+
 
         # ===== USUÁRIO 1 =====
         coluna_login.addWidget(QLabel("Login Aba 1"))
@@ -359,7 +384,7 @@ class MainApp(QWidget):
 
         coluna_processos.addWidget(QLabel("🌐 Navegador"))
         self.combo_navegador = QComboBox()
-        self.combo_navegador.addItems(["Edge", "Chrome", "Firefox", "Brave"])
+        self.combo_navegador.addItems(["Edge", "Chrome", "Brave"])
         self.combo_navegador.currentTextChanged.connect(self.trocar_navegador)
         coluna_processos.addWidget(self.combo_navegador)
 
@@ -420,12 +445,18 @@ class MainApp(QWidget):
         mapa = {
             "Edge": "edge",
             "Chrome": "chrome",
-            "Firefox": "firefox",
+            #"Firefox": "firefox",
             "Brave": "brave",
         }
         SeleniumController.NAVEGADOR = mapa.get(texto, "edge")
         self.log(f"🌐 Navegador selecionado: {texto} — terá efeito ao reabrir os browsers")
 
+    def obter_intervalo_reload(self) -> int:
+        try:
+            return int(self.combo_intervalo_reload.currentText())
+        except ValueError:
+            return 3
+        
     def trocar_vpn(self):
         self.log_new("BOTÃO CLICADO")
         self.label_ip.setText("🔄 Trocando VPN...")
@@ -604,7 +635,10 @@ class MainApp(QWidget):
             self.selenium3.worker_id = 3
             self.driver3 = self.selenium3.start()
             self.driver3.get(URL_INPI)
-
+            if self.btn_monitor_abas.isChecked():
+                for selenium in (self.selenium1, self.selenium2, self.selenium3):
+                    selenium.monitor_abas_ativo = True
+                    selenium.iniciar_monitor_abas()
             self.log_new("✅ Três Chromes iniciados com sucesso")
 
             self.iniciar_solver_auto()
@@ -702,6 +736,8 @@ class MainApp(QWidget):
                 f.write(f"{self.combo_usuario_2.currentIndex()}\n")
                 f.write(f"{self.combo_usuario_3.currentIndex()}\n")
                 f.write(f"{self.combo_timeout.currentText()}\n")
+                f.write(f"{self.combo_intervalo_reload.currentText()}\n")
+                f.write(f"{self.combo_navegador.currentText()}\n")
 
         except Exception as e:
             self.log_new(f"⚠️ Erro ao salvar configurações: {e}")
@@ -716,7 +752,7 @@ class MainApp(QWidget):
             with open("config_ui.txt", "r", encoding="utf-8") as f:
                 linhas = [x.strip() for x in f.readlines()]
 
-            if len(linhas) >= 4:
+            if len(linhas) >= 6:
                 self.combo_usuario.setCurrentIndex(
                     int(linhas[0])
                 )
@@ -732,6 +768,9 @@ class MainApp(QWidget):
                 self.combo_timeout.setCurrentText(
                     linhas[3]
                 )
+                self.combo_intervalo_reload.setCurrentText(linhas[4])
+
+                self.combo_navegador.setCurrentText(linhas[5])
 
                 # força preencher usuário e senha
                 self.on_usuario_selecionado(
@@ -776,26 +815,22 @@ class MainApp(QWidget):
         event.accept()
 
     def toggle_monitor_abas(self):
-
         ativo = self.btn_monitor_abas.isChecked()
 
         self.btn_monitor_abas.setText(
             "🧠 Monitor abas: ON" if ativo else "🧠 Monitor abas: OFF"
         )
+        self.log("🟢 Monitor ATIVADO" if ativo else "🔴 Monitor DESATIVADO")
 
-        self.log_new("🟢 Monitor ATIVADO" if ativo else "🔴 Monitor DESATIVADO")
-
-        for selenium in (self.selenium1, self.selenium2, self.selenium3):
-            if selenium:
-                selenium.monitor_abas_ativo = ativo
-
-                if ativo:
-                    selenium.iniciar_monitor_abas()
-                else:
-                    selenium.parar_monitor_abas()
-
-# Se você quer testar este arquivo standalone (sem main.py),
-# comente a importação em main.py e execute este módulo diretamente.
+        for attr in ("selenium1", "selenium2", "selenium3"):
+            selenium = getattr(self, attr, None)
+            if not selenium:
+                continue
+            if ativo:
+                selenium.monitor_abas_ativo = True
+                selenium.iniciar_monitor_abas()
+            else:
+                selenium.monitor_abas_ativo = False
 if __name__ == "__main__":
     import sys
 

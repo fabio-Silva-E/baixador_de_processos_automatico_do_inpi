@@ -331,6 +331,28 @@ def tratar_modal_captcha(self, driver, worker_id):
                     self.captcha_reload_count.get(worker_id, 0) + 1
 
                 while self.captcha_travado(worker_id):
+                    try:
+                        t_input = driver.find_element(By.ID, "recaptcha-token")
+                        val = t_input.get_attribute("value")
+                        if val and len(val) > 10:
+                            token = val
+                            self.log(f"[W{worker_id}] ✅ token detectado antes do reload — saindo")
+                            break  # ← sai do while reload, token será processado na próxima iteração do loop externo
+                    except NoSuchElementException:
+                        pass
+                    try:
+                        gr = driver.find_element(By.CSS_SELECTOR, "textarea.g-recaptcha-response")
+                        val2 = gr.get_attribute("value")
+                        if val2 and len(val2) > 10:
+                            token = val2
+                            self.log(f"[W{worker_id}] ✅ token detectado antes do reload — saindo")
+                            break
+                    except NoSuchElementException:
+                        pass
+
+                    if token:
+                        break
+
                     if self.sessao_expirada(driver):
                         self.log(f"[W{worker_id}] ⚠️ sessão expirou durante reload — abortando")
                         try:
@@ -341,7 +363,7 @@ def tratar_modal_captcha(self, driver, worker_id):
                     ok = self.clicar_reload_duplo(driver, worker_id)
                     self.log(f"🔥 Reload clicado ok={ok} — aguardando 3s...")
                     self.captcha_inicio[worker_id] = time.time()
-                    time.sleep(3)
+                    time.sleep(self.obter_intervalo_reload())
                     if self.captcha_retry.get(worker_id) or \
                             not self.captcha_estado.get(worker_id, False):
                         break
