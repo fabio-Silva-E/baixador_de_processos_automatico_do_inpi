@@ -268,20 +268,20 @@ class MainApp(QWidget):
         self.label_ip = QLabel("🌍 IP: ---")
         coluna_login.addWidget(self.label_ip)
         # ── licença ─────────────────────────────────────────
-        dias = dias_restantes()
-        if dias is not None:
-            if dias <= 7:
-                cor = "color: red; font-weight: bold;"
-                texto = f"⚠️ Licença expira em {dias} dias!"
-            elif dias <= 30:
-                cor = "color: orange;"
-                texto = f"🔑 Licença válida por {dias} dias"
-            else:
-                cor = "color: green;"
-                texto = f"✅ Licença válida por {dias} dias"
-            self.label_licenca = QLabel(texto)
-            self.label_licenca.setStyleSheet(cor)
-            coluna_login.addWidget(self.label_licenca)
+        #dias = dias_restantes()
+        #if dias is not None:
+        #    if dias <= 7:
+        #        cor = "color: red; font-weight: bold;"
+        #        texto = f"⚠️ Licença expira em {dias} dias!"
+        #    elif dias <= 30:
+        #        cor = "color: orange;"
+        #        texto = f"🔑 Licença válida por {dias} dias"
+        #    else:
+        #        cor = "color: green;"
+        #        texto = f"✅ Licença válida por {dias} dias"
+        #    self.label_licenca = QLabel(texto)
+        #    self.label_licenca.setStyleSheet(cor)
+        #    coluna_login.addWidget(self.label_licenca)
         # Em _criar_interface, após criar o botão:
         self.btn_monitor_abas = QPushButton("🧠 Monitor abas: ON")
         self.btn_monitor_abas.setCheckable(True)
