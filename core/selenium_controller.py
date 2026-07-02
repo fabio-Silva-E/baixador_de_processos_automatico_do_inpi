@@ -1,6 +1,9 @@
 import os
 import time
 import threading
+import json
+import websocket
+import requests as http_requests
 from pathlib import Path
 
 import requests
@@ -23,25 +26,16 @@ class SeleniumController:
     def __init__(self):
         self.driver = None
         self.driver_lock = threading.RLock()
-        # =========================
-        # 🔥 MONITOR DE ABAS (FIX)
-        # =========================
+        self._remote_debug_port = None
         self.monitor_abas_ativo = False
         self.monitor_abas_thread = None
-
         self.bloquear_fechamento_abas = False
         self.worker_id = None
 
-    # ==================================================
-    # 🧠 MONITOR DE ABAS (ON/OFF SEGURO)
-    # ==================================================
     def iniciar_monitor_abas(self):
-        # já rodando
         if self.monitor_abas_thread and self.monitor_abas_thread.is_alive():
             return
-
         self.monitor_abas_ativo = True
-
         def monitor():
             while self.monitor_abas_ativo:
                 if not self.driver:
@@ -54,9 +48,7 @@ class SeleniumController:
                 except Exception as e:
                     print(f"[MONITOR ERROR] {e}")
                     break
-                time.sleep(0.5)  # ← 500ms entre checagens
-
-        # ← ESTAS DUAS LINHAS ESTAVAM FALTANDO:
+                time.sleep(0.5)
         self.monitor_abas_thread = threading.Thread(target=monitor, daemon=True)
         self.monitor_abas_thread.start()
 
@@ -64,7 +56,6 @@ class SeleniumController:
         navegador = SeleniumController.NAVEGADOR
         worker_id = getattr(self, "worker_id", 1)
 
-        # ← perfil separado por NAVEGADOR e worker
         profile_path = Path(PROFILE_PATH) / navegador / f"profile_{worker_id}"
         profile_path.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +70,14 @@ class SeleniumController:
             "download.open_pdf_in_system_reader": False,
             "download.extensions_to_open": "",
             "download.manager.showWhenStarting": False,
+            "download.show_download_insights": False,
+            "browser.download.animateNotifications": False,
+            "download.shelf.enabled": False,
+            "download.show_download_in_shelf": False,
         }
+
+        debug_port = 9200 + worker_id
+        self._remote_debug_port = debug_port
 
         self._aguardar_rede_estavel()
 
@@ -89,6 +87,7 @@ class SeleniumController:
             options = Options()
             options.add_argument(f"--user-data-dir={profile_path}")
             options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
             self.driver = webdriver.Edge(service=Service(), options=options)
@@ -99,6 +98,7 @@ class SeleniumController:
             options = Options()
             options.add_argument(f"--user-data-dir={profile_path}")
             options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
             self.driver = webdriver.Chrome(service=Service(), options=options)
@@ -118,6 +118,7 @@ class SeleniumController:
             options.binary_location = brave_bin
             options.add_argument(f"--user-data-dir={profile_path}")
             options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
             self.driver = webdriver.Chrome(service=Service(), options=options)
@@ -130,7 +131,6 @@ class SeleniumController:
             firefox_bin = next((p for p in FIREFOX_BIN_PATHS if Path(p).exists()), None)
             if not firefox_bin:
                 raise RuntimeError("❌ Firefox não encontrado.")
-            # ← Firefox usa pasta própria separada dos outros
             firefox_profile = Path(PROFILE_PATH) / "firefox" / f"profile_{worker_id}"
             firefox_profile.mkdir(parents=True, exist_ok=True)
             options = Options()
@@ -155,18 +155,15 @@ class SeleniumController:
                 service=Service(GeckoDriverManager().install()),
                 options=options
             )
-            profile_path = firefox_profile  # ← atualiza para salvar corretamente abaixo
+            profile_path = firefox_profile
 
         else:
             raise ValueError(f"Navegador desconhecido: {navegador}")
 
         self.download_dir = download_dir
         self.profile_path = profile_path
-        #self.iniciar_monitor_abas()
         self.driver.set_window_size(600, 720)
         return self.driver
-
-
 
     def _aplicar_flags_comuns(self, options):
         """Flags comuns a Edge, Chrome e Brave."""
@@ -175,13 +172,140 @@ class SeleniumController:
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-features=DownloadBubble,DownloadBubbleV2,DownloadShelf")
+        options.add_argument("--disable-download-notification")
+        options.add_argument("--remote-allow-origins=*")
+
+    # ==================================================
+    # 🧹 LIMPAR HISTÓRICO DE DOWNLOADS via chrome://downloads
+    # ==================================================
+    def limpar_historico_downloads(self):
+        """
+        Abre chrome://downloads em nova aba, executa clear via shadow DOM e fecha.
+        """
+        aba_atual = None
+        nova_aba = None
+        try:
+            self.bloquear_fechamento_abas = True  # impede monitor de fechar a nova aba
+            aba_atual = self.driver.current_window_handle
+            abas_antes = set(self.driver.window_handles)
+
+            # abre nova aba vazia
+            self.driver.execute_script("window.open('');")
+
+            # aguarda a nova aba aparecer (até 3s)
+            prazo = time.time() + 3
+            while time.time() < prazo:
+                abas_agora = set(self.driver.window_handles)
+                novas = abas_agora - abas_antes
+                if novas:
+                    nova_aba = novas.pop()
+                    break
+                time.sleep(0.1)
+
+            if not nova_aba:
+                print("[limpar_downloads] nova aba não apareceu")
+                return
+
+            self.driver.switch_to.window(nova_aba)
+            self.driver.get("chrome://downloads/")
+            time.sleep(1.0)  # aguarda o DOM de chrome://downloads carregar
+
+            resultado = self.driver.execute_script("""
+                try {
+                    const mgr = document.querySelector('downloads-manager');
+                    if (!mgr) return 'no-manager';
+                    const root = mgr.shadowRoot;
+                    if (!root) return 'no-shadow';
+
+                    // tenta método direto
+                    if (typeof mgr.clearAll === 'function') { mgr.clearAll(); return 'clearAll-direct'; }
+
+                    // procura toolbar e botão clear dentro do shadow DOM aninhado
+                    function findClearBtn(el) {
+                        if (!el) return null;
+                        const sr = el.shadowRoot || el;
+                        const btn = sr.querySelector('#clearAll') || sr.querySelector('[id*=clear]');
+                        if (btn) return btn;
+                        for (const child of sr.querySelectorAll('*')) {
+                            const found = findClearBtn(child);
+                            if (found) return found;
+                        }
+                        return null;
+                    }
+
+                    // abre o menu "mais ações" primeiro
+                    const toolbar = root.querySelector('#toolbar') || root.querySelector('downloads-toolbar');
+                    if (toolbar) {
+                        const troot = toolbar.shadowRoot || toolbar;
+                        const moreBtn = troot.querySelector('#moreActionsButton') ||
+                                        troot.querySelector('cr-icon-button');
+                        if (moreBtn) moreBtn.click();
+                    }
+                    return 'menu-opened';
+                } catch(e) { return 'err1:' + e.toString(); }
+            """)
+            time.sleep(0.4)
+
+            resultado2 = self.driver.execute_script("""
+                try {
+                    const mgr = document.querySelector('downloads-manager');
+                    if (!mgr) return 'no-manager';
+
+                    function findAndClick(el) {
+                        if (!el) return false;
+                        const sr = el.shadowRoot || el;
+                        const candidates = sr.querySelectorAll('button, cr-button, [role=menuitem], paper-item');
+                        for (const btn of candidates) {
+                            const txt = (btn.textContent || '').toLowerCase().trim();
+                            if (txt.includes('clear') || txt.includes('limpar') || btn.id.includes('clear')) {
+                                btn.click();
+                                return 'clicked:' + (btn.id || txt);
+                            }
+                        }
+                        // recursivo em shadow roots
+                        for (const child of sr.querySelectorAll('*')) {
+                            if (child.shadowRoot) {
+                                const res = findAndClick(child);
+                                if (res) return res;
+                            }
+                        }
+                        return null;
+                    }
+
+                    const res = findAndClick(mgr);
+                    return res || 'not-found';
+                } catch(e) { return 'err2:' + e.toString(); }
+            """)
+
+            print(f"[limpar_downloads] {resultado} / {resultado2}")
+            time.sleep(0.3)
+
+        except Exception as e:
+            print(f"[limpar_downloads] erro: {e}")
+
+        finally:
+            self.bloquear_fechamento_abas = False
+            try:
+                # fecha a aba de downloads se ainda existir
+                handles = self.driver.window_handles
+                if nova_aba and nova_aba in handles:
+                    self.driver.switch_to.window(nova_aba)
+                    self.driver.close()
+                # volta para a aba original
+                handles = self.driver.window_handles
+                if aba_atual and aba_atual in handles:
+                    self.driver.switch_to.window(aba_atual)
+                elif handles:
+                    self.driver.switch_to.window(handles[0])
+            except Exception as fe:
+                print(f"[limpar_downloads] finally erro: {fe}")
 
     # ==================================================
     # 🌐 REDE
     # ==================================================
     def _aguardar_rede_estavel(self, timeout=30):
         start = time.time()
-
         while time.time() - start < timeout:
             try:
                 r = requests.get("https://www.google.com", timeout=5)
@@ -189,9 +313,7 @@ class SeleniumController:
                     return
             except:
                 pass
-
             time.sleep(3)
-
         raise RuntimeError("❌ Rede instável")
 
     # ==================================================
@@ -213,22 +335,17 @@ class SeleniumController:
             abas = self.driver.window_handles
             if len(abas) <= 1:
                 return
-
             aba_principal = abas[0]
-
             for aba in abas[1:]:
                 try:
                     self.driver.switch_to.window(aba)
                     url = self.driver.current_url
-                    # ← não fecha aba de downloads — wait_for_download cuida disso
                     if "downloads" in url:
                         continue
                     self.driver.close()
                 except Exception:
                     pass
-
             self.driver.switch_to.window(aba_principal)
-
         except Exception as e:
             print(f"Erro fechar abas: {e}")
 
@@ -276,57 +393,19 @@ class SeleniumController:
             return False
 
     def _arquivo_estavel(self, caminho, tentativas=5, intervalo=0.5):
-        """
-        Só considera estável se o tamanho NÃO mudar por várias verificações seguidas
-        """
         try:
             tamanhos_iguais = 0
             tamanho_anterior = -1
-
             for _ in range(tentativas):
                 tamanho = os.path.getsize(caminho)
-
                 if tamanho == tamanho_anterior:
                     tamanhos_iguais += 1
                 else:
-                    tamanhos_iguais = 0  # reset se mudou
-
+                    tamanhos_iguais = 0
                 tamanho_anterior = tamanho
-
-                # 🔥 só aceita se ficou estável por várias vezes
                 if tamanhos_iguais >= 2:
                     return True
-
                 time.sleep(intervalo)
-
         except FileNotFoundError:
             return False
-
         return False
-
-
-    #def fechar_abas_extras(self):
-    #
-    #     try:
-    #
-    #         abas = self.driver.window_handles
-    #
-    #         if len(abas) <= 1:
-    #             return
-    #
-    #         aba_principal = abas[0]
-    #
-    #         for aba in abas[1:]:
-    #
-    #             try:
-    #                 self.driver.switch_to.window(aba)
-    #                 self.driver.close()
-    #
-    #             except Exception:
-    #                 pass
-    #
-    #         self.driver.switch_to.window(aba_principal)
-    #
-    #     except Exception as e:
-    #
-    #         print(f"Erro fechar abas: {e}")

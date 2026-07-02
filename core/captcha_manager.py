@@ -9,7 +9,7 @@ import threading
 
 from config.settings import WAIT_MEDIUM, WAIT_SHORT, WAIT_LONG
 
-print(requests.get("https://api.ipify.org").text)
+
 from config.paths import  BASE_DIR
 
 from pathlib import Path
@@ -69,7 +69,8 @@ def _loop_monitor_captcha(self):
             except:
                 pass
 
-        time.sleep(2)
+        # 🔥 FIX #4 — era 2s, agora 5s para reduzir carga de CPU/rede
+        time.sleep(5)
 
 def iniciar_solver_auto(self):
     if getattr(self, "_solver_ativo", False):
@@ -130,7 +131,8 @@ def _loop_solver_button(self):
         except Exception as e:
             print(f"⚠️ Solver loop erro: {e}")
 
-        time.sleep(0.8)
+        # 🔥 FIX #5 — era 0.8s, agora 2s para reduzir capturas de tela contínuas
+        time.sleep(2)
 
 
 def parar_solver_auto(self):
@@ -147,7 +149,7 @@ def clicar_solver_button(self):
 
     try:
         pos = pyautogui.locateCenterOnScreen(
-            str(img_path),  # 👈 CONVERSÃO OBRIGATÓRIA
+            str(img_path),
             confidence=0.78
         )
 
@@ -160,8 +162,7 @@ def clicar_solver_button(self):
             self.log_new("⚠️ Solver button não encontrado na tela")
             return False
 
-    except: # Exception as e:
-        #self.log_new(f"❌ Erro PyAutoGUI: {e}")
+    except:
         pass
 
 def clicar_try_again(self, confidence=0.8):
@@ -203,8 +204,7 @@ def clicar_try_again(self, confidence=0.8):
 
         return False
 
-    except: # Exception as e:
-        #self.log_new(f"❌ Erro ao detectar Try Again: {e}")
+    except:
         pass
 
 def tratar_modal_captcha(self, driver, worker_id):
@@ -321,7 +321,7 @@ def tratar_modal_captcha(self, driver, worker_id):
                     self.garantir_login(driver)
                     self.log(f"[W{worker_id}] ✅ login refeito")
                 except Exception as e:
-                    self.log(f"[W{worker_id}] ❌ falha relogin: {e}")
+                    self.log(f"[W{worker_id}] ❌ falha relogin:")
                 return None
 
             # 3d) CAPTCHA TRAVADO
@@ -337,7 +337,7 @@ def tratar_modal_captcha(self, driver, worker_id):
                         if val and len(val) > 10:
                             token = val
                             self.log(f"[W{worker_id}] ✅ token detectado antes do reload — saindo")
-                            break  # ← sai do while reload, token será processado na próxima iteração do loop externo
+                            break
                     except NoSuchElementException:
                         pass
                     try:
@@ -410,14 +410,12 @@ def tratar_modal_captcha(self, driver, worker_id):
 
 
 def selenium_get_recaptcha_iframe(self, driver):
-    # procura iframe que contém 'anchor' (checkbox) ou 'api2/anchor'
     try:
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         for fr in iframes:
             src = fr.get_attribute("src") or ""
             if "api2/anchor" in src or "recaptcha" in src and "anchor" in src:
                 return fr
-        # fallback: iframe title containing "reCAPTCHA"
         for fr in iframes:
             title = fr.get_attribute("title") or ""
             if "reCAPTCHA" in title or "recaptcha" in title.lower():
@@ -433,15 +431,6 @@ def clicar_imagem(
         clicar=True,
         delay=0.5
 ):
-    """
-    Localiza uma imagem PNG na tela e opcionalmente clica nela.
-    :param nome_imagem: Nome do arquivo PNG (ex: 'captcha_checkbox.png')
-    :param timeout: Tempo máximo de espera (segundos)
-    :param confidence: Precisão da imagem (0.7 a 0.95)
-    :param clicar: Se True, clica no centro da imagem
-    :param delay: Delay após clicar
-    :return: (x, y) ou None
-    """
     caminho = BASE_DIR / "solver_button.png"
     if not caminho.exists():
         raise FileNotFoundError(f"Imagem não encontrada: {caminho}")
@@ -460,27 +449,6 @@ def clicar_imagem(
         time.sleep(0.3)
     self.log_new(f"⚠️ Imagem não encontrada na tela: {caminho}")
     return None
-
-#def clicar_reload_duplo(self, confidence=0.85):
-#    caminho = self.reload_img
-#    self.log(f"🔍 Procurando reload: {caminho}")
-#    if not caminho.exists():
-#        self.log("❌ reload_button.png não encontrado")
-#        return False
-#    try:
-#        with self.pyautogui_lock:   # ← evita conflito entre workers
-#            pos = pyautogui.locateCenterOnScreen(str(caminho), confidence=confidence)
-#            if not pos:
-#                self.log("❌ Reload não encontrado na tela")
-#                return False
-#            self.log(f"✅ Reload encontrado em X={pos.x} Y={pos.y}")
-#            pyautogui.moveTo(pos.x, pos.y, duration=0.2)
-#            pyautogui.doubleClick(pos.x, pos.y, interval=0.3)
-#            self.log("🔄 Reload clicado 2x")
-#            return True
-#    except Exception as e:
-#        self.log(f"❌ Erro reload: {e}")   # ← agora loga o erro real
-#        return False
 
 def clicar_reload_duplo(self, driver, worker_id):
     """Clica no botão reload do reCAPTCHA via Selenium no iframe bframe."""
@@ -510,10 +478,8 @@ def clicar_reload_duplo(self, driver, worker_id):
             driver.switch_to.default_content()
 
     except Exception as e:
-        self.log(f"[W{worker_id}] ❌ reload erro: {type(e).__name__}: {e}")
+        self.log_new(f"[W{worker_id}] ❌ reload erro: {type(e).__name__}: {e}")
         return False
-
-
 
 
 def captcha_travado(self, worker_id, limite=8):
@@ -554,13 +520,11 @@ def limpar_cache_navegador(self, driver):
 
         self.log_new("🧹 Limpando cache do Chrome...")
 
-        # cache HTTP
         driver.execute_cdp_cmd(
             "Network.clearBrowserCache",
             {}
         )
 
-        # cookies
         driver.execute_cdp_cmd(
             "Network.clearBrowserCookies",
             {}
@@ -586,7 +550,6 @@ def verificar_sessao_apos_download(self, driver, worker_id):
             self.log(f"✅ Worker {worker_id} — login refeito")
         except Exception as e:
             self.log(f"❌ Worker {worker_id} — falha relogin: {e}")
-        # retorna False para sinalizar que precisa reclicaar o PDF
         return False
     return True
 
@@ -606,7 +569,6 @@ def aguardar_botao_download(self, driver, worker_id, timeout=60):
                 self.log(f"[W{worker_id}] ❌ falha relogin: {e}")
             return None
 
-        # ── verifica se download já está em andamento ──────────────
         pasta = Path(self.download_dirs[worker_id])
         em_andamento = list(pasta.glob("*.crdownload"))
         if em_andamento:
@@ -621,7 +583,6 @@ def aguardar_botao_download(self, driver, worker_id, timeout=60):
             self.log(f"❌ Worker {worker_id} download timeout")
             return None
 
-        # ── tenta clicar o botão ───────────────────────────────────
         if not clicou:
             try:
                 btn = driver.find_element(By.ID, "captchaButton")
@@ -636,7 +597,6 @@ def aguardar_botao_download(self, driver, worker_id, timeout=60):
                 self.log(f"[W{worker_id}] 🖱 botão download clicado t={time.time() - t0:.1f}s")
                 clicou = True
 
-                # aguarda o .crdownload aparecer (confirmação de que o clique iniciou o download)
                 t_aguarda = time.time()
                 while time.time() - t_aguarda < 5:
                     if list(pasta.glob("*.crdownload")):
@@ -644,13 +604,11 @@ def aguardar_botao_download(self, driver, worker_id, timeout=60):
                         break
                     time.sleep(0.3)
                 else:
-                    # clique não iniciou download — tenta de novo
                     self.log(f"[W{worker_id}] ⚠️ .crdownload não apareceu — tentando novamente t={time.time()-t0:.1f}s")
                     clicou = False
                     time.sleep(1)
                     continue
 
-                # aguarda o arquivo final
                 self.log(f"⏳ Worker {worker_id} aguardando download...")
                 caminho_pdf = self.wait_for_download(worker_id)
                 if caminho_pdf and Path(caminho_pdf).exists():

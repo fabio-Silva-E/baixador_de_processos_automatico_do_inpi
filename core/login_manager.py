@@ -165,7 +165,7 @@ def garantir_acesso_peticiones(self, driver):
         self.log_new("🔓 Nenhum bloqueio de petições detectado")
 
     except Exception as e:
-        self.log_new(f"❌ Erro em garantir_acesso_peticiones: {e}")
+        self.log_new(f"❌ Erro em garantir_acesso_peticiones")
         raise
 
 def liberar_acesso_peticiones(self, driver):

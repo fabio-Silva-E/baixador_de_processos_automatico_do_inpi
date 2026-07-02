@@ -203,6 +203,12 @@ def abrir_detalhe_processo(self, driver, worker_id):
             self.log_new(f"❌ Worker {worker_id} sem número")
             return
 
+        # ✅ Aborta imediatamente se já foi concluído (evita reprocessar após retry)
+        if numero in self.processos_concluidos:
+            self.log(f"⏭️ Worker {worker_id} processo {numero} já concluído — pulando")
+            self._finalizar_processo_atual(worker_id)
+            return
+
         self.log_new(
             f"🚀 PIPELINE START worker {worker_id} | {numero}"
         )
@@ -317,6 +323,14 @@ def _fluxo_pdf(self, driver, worker_id, numero):
     self.log(
         f"📥 Worker {worker_id} iniciando fluxo PDF"
     )
+
+    # ✅ Verifica se o PDF já foi baixado antes de repetir todo o fluxo
+    nome_seguro = "".join(c for c in str(numero) if c.isalnum())
+    pasta_worker = Path(self.download_dirs[worker_id])
+    pdf_existente = pasta_worker / f"{nome_seguro}.pdf"
+    if pdf_existente.exists():
+        self.log(f"✅ Worker {worker_id} PDF já existe: {pdf_existente.name} — pulando download")
+        return str(pdf_existente)
 
     caminho_pdf = self.tentar_clicar_botao_pdf(
         driver,
