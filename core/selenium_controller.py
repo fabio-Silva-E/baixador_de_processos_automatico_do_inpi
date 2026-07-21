@@ -41,9 +41,17 @@ class SeleniumController:
                 if not self.driver:
                     time.sleep(0.5)
                     continue
+                # enquanto bloqueado (ex: liberar_acesso_peticiones em andamento),
+                # nem sequer consulta window_handles: essa chamada compete pelo
+                # unico slot do connection pool do driver com o WebDriverWait
+                # que esta rodando naquele momento, podendo fazer o wait estourar
+                # o timeout por disputa de conexao, nao por lentidao real
+                if self.bloquear_fechamento_abas:
+                    time.sleep(0.5)
+                    continue
                 try:
                     abas = self.driver.window_handles
-                    if len(abas) > 1 and not self.bloquear_fechamento_abas:
+                    if len(abas) > 1:
                         self.fechar_abas_extras()
                 except Exception as e:
                     print(f"[MONITOR ERROR] {e}")
@@ -90,7 +98,8 @@ class SeleniumController:
             options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
-            self.driver = webdriver.Edge(service=Service(), options=options)
+            self.service = Service()
+            self.driver = webdriver.Edge(service=self.service, options=options)
 
         elif navegador == "chrome":
             from selenium.webdriver.chrome.service import Service
@@ -101,7 +110,8 @@ class SeleniumController:
             options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
-            self.driver = webdriver.Chrome(service=Service(), options=options)
+            self.service = Service()
+            self.driver = webdriver.Chrome(service=self.service, options=options)
 
         elif navegador == "brave":
             from selenium.webdriver.chrome.service import Service
@@ -121,7 +131,8 @@ class SeleniumController:
             options.add_argument(f"--remote-debugging-port={debug_port}")
             options.add_experimental_option("prefs", prefs)
             self._aplicar_flags_comuns(options)
-            self.driver = webdriver.Chrome(service=Service(), options=options)
+            self.service = Service()
+            self.driver = webdriver.Chrome(service=self.service, options=options)
 
         elif navegador == "firefox":
             from selenium.webdriver.firefox.service import Service
@@ -163,6 +174,45 @@ class SeleniumController:
         self.download_dir = download_dir
         self.profile_path = profile_path
         self.driver.set_window_size(600, 720)
+
+        # 🔧 FIX: sem timeout no cliente HTTP do Selenium, uma chamada travada
+        # ao chromedriver (socket que nunca recebe resposta) bloqueia a
+        # thread do worker para sempre — mesmo dentro de um WebDriverWait
+        # com timeout definido, porque o relógio do wait nunca chega a ser
+        # checado enquanto a chamada HTTP subjacente não retorna. Definindo
+        # um timeout aqui, hangs silenciosos viram exceções de verdade,
+        # permitindo que o retry e o reinicio_sessao_worker entrem em ação.
+        try:
+            # 🔧 FIX v2: `command_executor.set_timeout()` é um classmethod do
+            # Selenium que mexe num atributo de CLASSE compartilhado entre
+            # TODAS as conexões (RemoteConnection._client_config). Como os
+            # workers sobem seus navegadores quase ao mesmo tempo, isso cria
+            # uma condição de corrida: o timeout de um worker podia
+            # sobrescrever/perder efeito no de outro, deixando alguns
+            # drivers sem timeout nenhum (bloqueio infinito, que foi
+            # exatamente o travamento observado). Aqui setamos o timeout
+            # direto no objeto de config DESSA instância, sem depender do
+            # estado de classe compartilhado.
+            self.driver.command_executor._client_config.timeout = 30
+
+            # 🔧 FIX v3: o RemoteConnection cria seu urllib3.PoolManager com
+            # maxsize=1 por padrão (uma unica conexao HTTP por driver). A
+            # thread de monitor_abas (poll a cada 0.5s em window_handles) e o
+            # proprio worker fazem chamadas concorrentes nesse MESMO driver,
+            # entao com so 1 conexao elas ficam descartando/reabrindo conexao
+            # o tempo todo ("Connection pool is full, discarding connection"),
+            # o que sob qualquer pico de carga pode fazer um WebDriverWait
+            # estourar por disputa de conexao, nao por lentidao real da
+            # pagina. Recriamos o pool com mais slots para essa instância.
+            import urllib3
+            self.driver.command_executor._conn = urllib3.PoolManager(
+                timeout=self.driver.command_executor._client_config.timeout,
+                maxsize=10,
+                block=False,
+            )
+        except Exception as e:
+            print(f"[selenium] não foi possível definir timeout/pool do command_executor: {e}")
+
         return self.driver
 
     def _aplicar_flags_comuns(self, options):
@@ -302,6 +352,121 @@ class SeleniumController:
                 print(f"[limpar_downloads] finally erro: {fe}")
 
     # ==================================================
+    # 🧹 LIMPAR HISTÓRICO DE NAVEGAÇÃO via chrome://settings/clearBrowserData
+    # ==================================================
+    def limpar_historico_navegacao(self):
+        """
+        Abre chrome://settings/clearBrowserData em nova aba, tenta ajustar o
+        período para 'Todo o período' e confirma a limpeza do histórico de
+        navegação (mesmo padrão de limpar_historico_downloads).
+        """
+        aba_atual = None
+        nova_aba = None
+        try:
+            self.bloquear_fechamento_abas = True  # impede monitor de fechar a nova aba
+            aba_atual = self.driver.current_window_handle
+            abas_antes = set(self.driver.window_handles)
+
+            # abre nova aba vazia
+            self.driver.execute_script("window.open('');")
+
+            # aguarda a nova aba aparecer (até 3s)
+            prazo = time.time() + 3
+            while time.time() < prazo:
+                abas_agora = set(self.driver.window_handles)
+                novas = abas_agora - abas_antes
+                if novas:
+                    nova_aba = novas.pop()
+                    break
+                time.sleep(0.1)
+
+            if not nova_aba:
+                print("[limpar_historico] nova aba não apareceu")
+                return
+
+            self.driver.switch_to.window(nova_aba)
+            self.driver.get("chrome://settings/clearBrowserData")
+            time.sleep(1.2)  # aguarda o diálogo de limpeza carregar
+
+            # tenta selecionar "Todo o período" / "All time" no seletor de intervalo
+            resultado1 = self.driver.execute_script("""
+                try {
+                    function deepQueryAll(root, sel) {
+                        let out = [];
+                        try { out = out.concat(Array.from(root.querySelectorAll(sel))); } catch(e) {}
+                        const all = root.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.shadowRoot) out = out.concat(deepQueryAll(el.shadowRoot, sel));
+                        }
+                        return out;
+                    }
+                    const selects = deepQueryAll(document, 'select');
+                    for (const sel of selects) {
+                        if (sel.id && sel.id.toLowerCase().includes('clearfrom')) {
+                            const opts = Array.from(sel.options).map(o => o.textContent.toLowerCase());
+                            const idx = opts.findIndex(t => t.includes('todo') || t.includes('all time'));
+                            if (idx >= 0) {
+                                sel.selectedIndex = idx;
+                                sel.dispatchEvent(new Event('change', {bubbles:true}));
+                                return 'periodo-ajustado:' + opts[idx];
+                            }
+                        }
+                    }
+                    return 'seletor-nao-encontrado';
+                } catch(e) { return 'err1:' + e.toString(); }
+            """)
+            time.sleep(0.3)
+
+            # clica no botão de confirmar limpeza ("Limpar dados" / "Clear data")
+            resultado2 = self.driver.execute_script("""
+                try {
+                    function deepQueryAll(root, sel) {
+                        let out = [];
+                        try { out = out.concat(Array.from(root.querySelectorAll(sel))); } catch(e) {}
+                        const all = root.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.shadowRoot) out = out.concat(deepQueryAll(el.shadowRoot, sel));
+                        }
+                        return out;
+                    }
+                    const candidatos = deepQueryAll(document, 'cr-button, button');
+                    for (const btn of candidatos) {
+                        const txt = (btn.textContent || '').toLowerCase().trim();
+                        const id = (btn.id || '').toLowerCase();
+                        if (id.includes('clearbrowsingdataconfirm') ||
+                            txt.includes('limpar dados') || txt.includes('clear data')) {
+                            btn.click();
+                            return 'clicado:' + (btn.id || txt);
+                        }
+                    }
+                    return 'botao-nao-encontrado';
+                } catch(e) { return 'err2:' + e.toString(); }
+            """)
+
+            print(f"[limpar_historico] {resultado1} / {resultado2}")
+            time.sleep(1.5)  # aguarda a limpeza concluir antes de fechar a aba
+
+        except Exception as e:
+            print(f"[limpar_historico] erro: {e}")
+
+        finally:
+            self.bloquear_fechamento_abas = False
+            try:
+                # fecha a aba de configurações se ainda existir
+                handles = self.driver.window_handles
+                if nova_aba and nova_aba in handles:
+                    self.driver.switch_to.window(nova_aba)
+                    self.driver.close()
+                # volta para a aba original
+                handles = self.driver.window_handles
+                if aba_atual and aba_atual in handles:
+                    self.driver.switch_to.window(aba_atual)
+                elif handles:
+                    self.driver.switch_to.window(handles[0])
+            except Exception as fe:
+                print(f"[limpar_historico] finally erro: {fe}")
+
+    # ==================================================
     # 🌐 REDE
     # ==================================================
     def _aguardar_rede_estavel(self, timeout=30):
@@ -320,12 +485,44 @@ class SeleniumController:
     # 🛑 STOP
     # ==================================================
     def stop(self):
+        self.parar_monitor_abas()
+
+        # 🔧 FIX: driver.quit() manda um comando HTTP pro chromedriver e
+        # espera resposta — se o chromedriver ja tiver crashado/travado
+        # (exatamente os stack traces nativos vistos no app.log), essa
+        # chamada pode travar por muito tempo ou falhar, e o antigo
+        # `except: pass` engolia isso silenciosamente sem garantir que o
+        # processo terminasse. Rodar num thread com timeout evita travar
+        # a reinicializacao da sessao esperando um quit() que nunca volta.
+        if self.driver:
+            t = threading.Thread(target=self.driver.quit, daemon=True)
+            t.start()
+            t.join(timeout=10)
+
+        # 🔧 FIX: mesmo que o quit() acima tenha travado/falhado, garante
+        # que o processo do chromedriver/msedgedriver E o navegador filho
+        # sejam mortos de verdade pelo PID. Sem isso, cada crash+reinicio
+        # de sessao deixava um processo zumbi rodando (consumindo RAM),
+        # que se acumula ao longo de uma execucao longa ate a maquina
+        # ficar sem memoria — mais grave em maquinas mais fracas, batendo
+        # com o programa "fechando sozinho" na secundaria.
         try:
-            self.parar_monitor_abas()
-            if self.driver:
-                self.driver.quit()
-        except:
-            pass
+            import psutil
+            service = getattr(self, "service", None)
+            proc = getattr(service, "process", None)
+            if proc and proc.pid:
+                try:
+                    p = psutil.Process(proc.pid)
+                    for child in p.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except Exception as e:
+            print(f"[selenium] erro ao forcar encerramento do processo: {e}")
 
     # ==================================================
     # 🔥 FECHAR ABAS EXTRAS

@@ -1,1 +1,8 @@
-pyinstaller --onefile --windowed  --collect-all selenium --name=inpi_logos main.py               
+pyinstaller --onefile --windowed  --collect-all selenium  --name=inpi_teste main.py
+
+pyinstaller --onefile --windowed gerar_licenca.py
+
+
+
+
+pyinstaller --onedir --windowed  --collect-all selenium  --name=inpi_teste main.py

@@ -95,6 +95,12 @@ def _processar_proximo(self, worker_id):
 
 def _erro_worker(self, worker_id, mensagem):
     self.processando[worker_id] = False
+
+    # 🔧 FIX: remove a referência da QThread finalizada, evitando acúmulo
+    # de objetos QThread no dicionário self._workers ao longo de retries.
+    if hasattr(self, "_workers"):
+        self._workers.pop(worker_id, None)
+
     QTimer.singleShot(
         0, lambda: self._processar_proximo(worker_id)
     )

@@ -1,4 +1,16 @@
 import sys
+import socket
+
+# 🔧 FIX: trava de segurança global de rede. Sem isso, qualquer chamada de
+# rede (Selenium/chromedriver, requests, etc.) que não defina seu próprio
+# timeout fica bloqueada PARA SEMPRE se o outro lado parar de responder
+# (foi a causa raiz confirmada dos travamentos do app: threads presas
+# indefinidamente em socket.readinto aguardando o chromedriver). Isso
+# precisa vir ANTES de qualquer import que crie sockets (ex.: ui.app ->
+# selenium), pois alguns módulos leem socket.getdefaulttimeout() uma
+# única vez, no momento do import.
+socket.setdefaulttimeout(30)
+
 import logging
 import threading
 import traceback

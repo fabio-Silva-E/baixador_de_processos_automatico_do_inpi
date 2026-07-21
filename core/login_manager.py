@@ -5,7 +5,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 
-from config.settings import WAIT_MEDIUM
+from config.settings import WAIT_MEDIUM, WAIT_POPUP
 
 
 def login_tres_abas(self):
@@ -124,72 +124,159 @@ def garantir_login(self, driver):
     except TimeoutException:
         raise Exception("❌ Campo NumPedido não apareceu após acessar Marcas")
 
-def garantir_acesso_peticiones(self, driver):
+def reiniciar_sessao_worker(self, worker_id):
+    """
+    🔧 FIX: reinicia o navegador (Selenium) de um worker quando a sessão
+    morre (ex.: InvalidSessionIdException, chrome not reachable, janela
+    fechada). Sem isso, o worker ficava retentando indefinidamente contra
+    uma sessão já morta, sem nunca reabrir o navegador.
+    """
+    from core.selenium_controller import SeleniumController
+
+    self.log_new(f"♻️ Worker {worker_id}: reiniciando sessão do navegador...")
 
     try:
-        self.log_new("🔍 Verificando necessidade de amplo acesso às petições...")
+        selenium_antigo = self._selenium_por_worker(worker_id)
+        selenium_antigo.stop()
+    except Exception as e:
+        self.log_new(f"⚠️ Worker {worker_id}: erro ao parar sessão antiga: {e}")
 
+    time.sleep(2)
+
+    novo_selenium = SeleniumController()
+    novo_selenium.worker_id = worker_id
+    novo_driver = novo_selenium.start()
+    novo_driver.get("https://busca.inpi.gov.br/pePI/")
+
+    if worker_id == 1:
+        self.selenium1 = novo_selenium
+        self.driver1 = novo_driver
+    elif worker_id == 2:
+        self.selenium2 = novo_selenium
+        self.driver2 = novo_driver
+    elif worker_id == 3:
+        self.selenium3 = novo_selenium
+        self.driver3 = novo_driver
+
+    try:
+        if self.btn_monitor_abas.isChecked():
+            novo_selenium.monitor_abas_ativo = True
+            novo_selenium.iniciar_monitor_abas()
+    except Exception:
+        pass
+
+    self.log_new(f"✅ Worker {worker_id}: sessão reiniciada com sucesso")
+
+
+def garantir_acesso_peticiones(self, driver):
+    """
+    Retorna True se o link de restricao foi encontrado e clicado (ou seja,
+    uma popup de amplo acesso DEVE aparecer e liberar_acesso_peticiones
+    precisa rodar). Retorna False se o processo ja tem acesso liberado e
+    nenhuma popup vai aparecer — nesse caso o chamador deve PULAR
+    liberar_acesso_peticiones em vez de esperar 20s por uma popup que
+    nunca chega.
+    """
+    self.log_new("🔍 Verificando necessidade de amplo acesso às petições...")
+
+    try:
         link_amplo = WebDriverWait(driver, WAIT_MEDIUM).until(
             EC.presence_of_element_located((
                 By.XPATH,
                 "//a[contains(normalize-space(),'Clique aqui para ter acesso as petições')]"
             ))
         )
+    except TimeoutException:
+        # 🔧 FIX: link nao existe = acesso ja liberado, nenhuma popup vai
+        # aparecer. Retorna False explicitamente em vez de deixar o
+        # chamador achar que precisa esperar por uma popup.
+        self.log_new("🔓 Nenhum bloqueio de petições detectado")
+        return False
 
-        self.log_new("🔐 Acesso restrito detectado. Solicitando liberação...")
+    self.log_new("🔐 Acesso restrito detectado. Solicitando liberação...")
 
+    try:
         driver.execute_script(
             "arguments[0].scrollIntoView(true);",
             link_amplo
         )
-
         time.sleep(0.5)
-
         link_amplo.click()
-
-        # aguarda popup/modal
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.title_contains("Finalidade do Acesso")
-        )
-
-        self.log_new("🪟 Modal de acesso aberto")
-
-        # espera voltar
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            EC.not_(EC.title_contains("Finalidade do Acesso"))
-        )
-
-        self.log_new("✅ Acesso às petições liberado")
-
-    except TimeoutException:
-        self.log_new("🔓 Nenhum bloqueio de petições detectado")
-
+        self.log_new("🪟 Link de amplo acesso clicado — popup deve abrir")
     except Exception as e:
-        self.log_new(f"❌ Erro em garantir_acesso_peticiones")
+        self.log_new(f"❌ Erro ao clicar no link de amplo acesso: {e}")
         raise
+
+    # 🔧 FIX: o antigo check de titulo ("Finalidade do Acesso") rodava no
+    # driver ainda apontando pra janela PRINCIPAL, mas a popup abre numa
+    # janela NOVA — entao esse titulo nunca aparecia aqui de verdade, e
+    # esse trecho sempre estourava o timeout e caia no "Nenhum bloqueio"
+    # (mensagem enganosa, pois o link FOI clicado e a popup FOI aberta).
+    # Quem realmente confere/usa a popup e liberar_acesso_peticiones, que
+    # troca pra janela nova. Aqui so precisamos confirmar que clicamos.
+    return True
 
 def liberar_acesso_peticiones(self, driver):
     janela_principal = driver.current_window_handle
+
+    # 🔧 FIX: esta função abre uma popup de verdade (nova janela) e precisa
+    # de alguns segundos para marcar o checkbox e clicar em Enviar. Mas o
+    # monitor de abas (SeleniumController.monitor, rodando a cada 0.5s)
+    # fecha QUALQUER janela extra assim que detecta mais de uma aba —
+    # inclusive essa popup de liberação — antes da interação terminar.
+    # Isso fazia a popup "fechar antes da liberação". Bloqueamos o monitor
+    # enquanto trabalhamos na popup, igual já é feito em
+    # limpar_historico_downloads/limpar_historico_navegacao.
+    try:
+        worker_id = (
+            1 if driver == self.driver1 else
+            2 if driver == self.driver2 else
+            3
+        )
+        selenium_ctrl = self._selenium_por_worker(worker_id)
+        selenium_ctrl.bloquear_fechamento_abas = True
+    except Exception:
+        selenium_ctrl = None
+
     try:
         self.log_new("🔍 Verificando popup de amplo acesso...")
-        # aguarda abrir nova janela (popup)
-        WebDriverWait(driver, WAIT_MEDIUM).until(
-            lambda d: len(d.window_handles) > 1
+        # 🔧 FIX v2: quem abre a popup de verdade e o clique em
+        # garantir_acesso_peticiones, que roda ANTES desta funcao — ou seja,
+        # a popup ja existe quando chegamos aqui. A versao anterior deste
+        # fix comparava handles "antes vs depois" pra achar uma janela NOVA,
+        # mas como a popup ja estava aberta antes mesmo de comecarmos a
+        # contar, nenhuma janela "nova" surgia e o wait sempre estourava os
+        # 20s por completo, mesmo com a popup renderizada corretamente na
+        # tela (confirmado por screenshot). Agora identificamos a popup
+        # pelo conteudo dela (titulo "Finalidade do Acesso"), nao por
+        # timing de quando apareceu — funciona tanto se ela ja estava
+        # aberta quanto se abrir durante a espera, e ainda ignora janelas
+        # orfas de verdade (que nao vao ter esse titulo).
+        def _popup_valida(d):
+            for h in d.window_handles:
+                if h == janela_principal:
+                    continue
+                try:
+                    d.switch_to.window(h)
+                    if "Finalidade do Acesso" in d.title:
+                        return h
+                except Exception:
+                    continue
+            return None
+
+        janela_popup = WebDriverWait(driver, WAIT_POPUP).until(
+            lambda d: _popup_valida(d)
         )
-        # muda para o popup
-        for janela in driver.window_handles:
-            if janela != janela_principal:
-                driver.switch_to.window(janela)
-                break
+        driver.switch_to.window(janela_popup)
         self.log_new("🪟 Popup de amplo acesso detectado")
         # aguarda checkbox aparecer
-        checkbox = WebDriverWait(driver, WAIT_MEDIUM).until(
+        checkbox = WebDriverWait(driver, WAIT_POPUP).until(
             EC.element_to_be_clickable((By.ID, "aceite"))
         )
         checkbox.click()
         self.log_new("☑️ Checkbox de concordância marcado")
         # botão Enviar (input submit)
-        botao_enviar = WebDriverWait(driver, WAIT_MEDIUM).until(
+        botao_enviar = WebDriverWait(driver, WAIT_POPUP).until(
             EC.element_to_be_clickable((
                 By.XPATH,
                 "//input[@type='submit' and @name='Enviar']"
@@ -198,7 +285,7 @@ def liberar_acesso_peticiones(self, driver):
         botao_enviar.click()
         self.log_new("📨 Formulário enviado")
         # aguarda popup fechar
-        WebDriverWait(driver, WAIT_MEDIUM).until(
+        WebDriverWait(driver, WAIT_POPUP).until(
             lambda d: len(d.window_handles) == 1
         )
         # volta para janela principal
@@ -206,4 +293,52 @@ def liberar_acesso_peticiones(self, driver):
         self.log_new("✅ Acesso às petições liberado com sucesso")
     except TimeoutException:
         self.log_new("🔓 Nenhum popup de amplo acesso detectado")
+        # 🔧 FIX: salva screenshot + HTML da(s) janela(s) extra(s) no momento
+        # da falha, para diagnosticar POR QUE o checkbox/botao nao apareceu
+        # a tempo (pagina travada, elemento com outro id, alerta bloqueando
+        # etc). Sem isso estamos so adivinhando pelo log de texto.
+        try:
+            from pathlib import Path
+            import datetime
+            debug_dir = Path("debug_popup")
+            debug_dir.mkdir(exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            for idx, janela in enumerate(driver.window_handles):
+                if janela == janela_principal:
+                    continue
+                try:
+                    driver.switch_to.window(janela)
+                    driver.save_screenshot(str(debug_dir / f"popup_{ts}_{idx}.png"))
+                    html = driver.page_source
+                    (debug_dir / f"popup_{ts}_{idx}.html").write_text(html, encoding="utf-8")
+                    self.log_new(f"📸 Debug salvo: popup_{ts}_{idx}.png/html (url={driver.current_url})")
+                except Exception as e_dbg:
+                    self.log_new(f"⚠️ Falha ao salvar debug da popup: {e_dbg}")
+        except Exception:
+            pass
+        # 🔧 FIX: fecha qualquer janela extra que tenha ficado aberta (a
+        # popup pode ter aberto mas nao renderizado o checkbox a tempo).
+        # Sem isso, essa janela orfa continua aberta e "engana" a PROXIMA
+        # chamada de liberar_acesso_peticiones, que a confunde com uma
+        # popup nova valida e nunca acha o checkbox nela — um efeito
+        # cascata que faz a falha se perpetuar nas tentativas seguintes.
+        for janela in list(driver.window_handles):
+            if janela != janela_principal:
+                try:
+                    driver.switch_to.window(janela)
+                    driver.close()
+                except Exception:
+                    pass
         driver.switch_to.window(janela_principal)
+
+        # 🔧 FIX: antes o codigo engolia essa falha e o chamador seguia como
+        # se a liberacao tivesse funcionado ("peticões liberadas"), indo
+        # direto pro clique do PDF sem acesso liberado de verdade — o que
+        # bate com os crashes de chromedriver vistos logo depois no log.
+        # Agora propagamos a falha para o worker tratar como erro e
+        # repetir o processo, em vez de seguir cegamente.
+        raise Exception("Popup de amplo acesso nao pode ser liberada (timeout)")
+
+    finally:
+        if selenium_ctrl is not None:
+            selenium_ctrl.bloquear_fechamento_abas = False

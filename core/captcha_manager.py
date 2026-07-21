@@ -23,7 +23,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
+import pyautogui
 
+pyautogui.screenshot("tela.png")
 
 def iniciar_monitor_captcha(self):
 

@@ -36,7 +36,8 @@ from core.login_manager import (
     login_inpi,
     garantir_login,
     garantir_acesso_peticiones,
-    liberar_acesso_peticiones
+    liberar_acesso_peticiones,
+    reiniciar_sessao_worker
 )
 from core.processo_manager import (
     selecionar_processo,
@@ -103,6 +104,8 @@ class MainApp(QWidget):
     selenium_get_recaptcha_iframe = selenium_get_recaptcha_iframe
     clicar_imagem = clicar_imagem
     log_signal = pyqtSignal(str)
+    ip_signal = pyqtSignal(str)
+    selenium_pronto_signal = pyqtSignal(bool, str)
     selecionar_processo = selecionar_processo
     atualizar_lista_processos = atualizar_lista_processos
     _processar_proximo = _processar_proximo
@@ -116,6 +119,7 @@ class MainApp(QWidget):
     login_tres_abas = login_tres_abas
     login_inpi = login_inpi
     garantir_login = garantir_login
+    reiniciar_sessao_worker = reiniciar_sessao_worker
     garantir_acesso_peticiones = garantir_acesso_peticiones
     liberar_acesso_peticiones = liberar_acesso_peticiones
     _renomear_pdf_para_processo = _renomear_pdf_para_processo
@@ -178,6 +182,7 @@ class MainApp(QWidget):
         }
 
         self.log_signal.connect(self._log_ui)
+        self.selenium_pronto_signal.connect(self._on_selenium_pronto)
 
         self.tentativas_por_processo = {}
         self.MAX_TENTATIVAS = 2
@@ -271,6 +276,7 @@ class MainApp(QWidget):
         self.btn_monitor_abas = QPushButton("🧠 Monitor abas: ON")
         self.btn_monitor_abas.setCheckable(True)
         self.btn_monitor_abas.setChecked(True)
+        self._monitor_abas_ligado = True
         self.btn_monitor_abas.clicked.connect(self.toggle_monitor_abas)
 
         coluna_login.addWidget(self.btn_monitor_abas)
@@ -283,6 +289,8 @@ class MainApp(QWidget):
 
         self.combo_timeout.addItems(["30", "60", "120", "180", "300"])
         self.combo_timeout.setCurrentText("120")
+        self._timeout_captcha = 120
+        self.combo_timeout.currentTextChanged.connect(self._on_timeout_mudou)
 
         coluna_login.addWidget(self.combo_timeout)
 
@@ -290,6 +298,8 @@ class MainApp(QWidget):
         self.combo_intervalo_reload = QComboBox()
         self.combo_intervalo_reload.addItems(["1", "2", "3", "5", "8", "10"])
         self.combo_intervalo_reload.setCurrentText("3")
+        self._intervalo_reload = 3
+        self.combo_intervalo_reload.currentTextChanged.connect(self._on_intervalo_reload_mudou)
         coluna_login.addWidget(self.combo_intervalo_reload)
 
         # ===== USUÁRIO 1 =====
@@ -418,14 +428,34 @@ class MainApp(QWidget):
         self.label_status.setText(f"Status: {mensagem}")
 
     def _iniciar_monitor_ip(self):
+        self.ip_signal.connect(self.label_ip.setText)
+        self._ip_check_em_andamento = False
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.atualizar_ip)
         self.timer.start(5000)
         self.atualizar_ip()
 
     def atualizar_ip(self):
-        ip = self.vpn.ip_atual()
-        self.label_ip.setText(f"🌍 IP: {ip}")
+        # 🔧 FIX: `vpn.ip_atual()` faz uma requisicao de rede que, mesmo com
+        # timeout=5 no requests, pode travar no handshake SSL (visto no
+        # faulthandler.log preso por minutos em ssl.py do_handshake) --
+        # problema conhecido do Windows quando a validacao de certificado
+        # faz uma checagem de revogacao que ignora o timeout do socket.
+        # Como essa funcao roda direto no QTimer da thread da UI, um unico
+        # travamento congela a janela inteira. Rodando em thread separada,
+        # mesmo que essa chamada trave, a UI continua respondendo.
+        if self._ip_check_em_andamento:
+            return
+        self._ip_check_em_andamento = True
+
+        def worker():
+            try:
+                ip = self.vpn.ip_atual()
+            finally:
+                self._ip_check_em_andamento = False
+            self.ip_signal.emit(f"🌍 IP: {ip}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def trocar_navegador(self, texto):
         from core.selenium_controller import SeleniumController
@@ -438,10 +468,20 @@ class MainApp(QWidget):
         self.log(f"🌐 Navegador selecionado: {texto} — terá efeito ao reabrir os browsers")
 
     def obter_intervalo_reload(self) -> int:
+        # 🔧 FIX: le um atributo Python simples, cacheado pela thread da UI,
+        # em vez de chamar self.combo_intervalo_reload.currentText() direto
+        # — essa funcao e chamada de dentro das threads de worker (fluxo de
+        # captcha), e widgets do Qt nao sao thread-safe. Acesso concorrente
+        # a um QComboBox de fora da thread da UI e a causa mais provavel do
+        # crash confirmado no Event Viewer (0xc0000409 dentro do
+        # Qt5Core.dll).
+        return getattr(self, "_intervalo_reload", 3)
+
+    def _on_intervalo_reload_mudou(self, texto):
         try:
-            return int(self.combo_intervalo_reload.currentText())
+            self._intervalo_reload = int(texto)
         except ValueError:
-            return 3
+            self._intervalo_reload = 3
 
     def trocar_vpn(self):
         self.log_new("BOTÃO CLICADO")
@@ -567,47 +607,74 @@ class MainApp(QWidget):
         logger.error(mensagem)
 
     def iniciar_selenium(self):
+        # 🔧 FIX: abrir os 3 navegadores e navegar ate URL_INPI faz chamadas
+        # de rede (driver.get) que, numa maquina com internet mais lenta,
+        # podem travar por bastante tempo. Como esse metodo roda direto no
+        # slot do clique do botao (thread da UI/Qt), um travamento aqui
+        # congela a janela inteira — no faulthandler.log da maquina
+        # secundaria a MainThread ficou presa exatamente nesse driver.get()
+        # dentro de iniciar_selenium. Mesma causa raiz do bug ja corrigido
+        # em atualizar_ip(): tirar a chamada de rede da thread da UI.
+        if getattr(self, "_iniciando_selenium", False):
+            return
+        self._iniciando_selenium = True
+        self.btn_iniciar.setEnabled(False)
         self.log("Iniciando 3 Chromes independentes...")
 
-        try:
-            if hasattr(self, "driver1") and self.driver1:
-                self.selenium1.stop()
-            if hasattr(self, "driver2") and self.driver2:
-                self.selenium2.stop()
-            if hasattr(self, "driver3") and self.driver3:
-                self.selenium3.stop()
+        def worker():
+            try:
+                if hasattr(self, "driver1") and self.driver1:
+                    self.selenium1.stop()
+                if hasattr(self, "driver2") and self.driver2:
+                    self.selenium2.stop()
+                if hasattr(self, "driver3") and self.driver3:
+                    self.selenium3.stop()
 
-            time.sleep(3)
+                time.sleep(3)
 
-            self.selenium1 = SeleniumController()
-            self.selenium1.worker_id = 1
-            self.driver1 = self.selenium1.start()
-            self.driver1.get(URL_INPI)
+                self.selenium1 = SeleniumController()
+                self.selenium1.worker_id = 1
+                self.driver1 = self.selenium1.start()
+                self.driver1.get(URL_INPI)
 
-            self.selenium2 = SeleniumController()
-            self.selenium2.worker_id = 2
-            self.driver2 = self.selenium2.start()
-            self.driver2.get(URL_INPI)
+                self.selenium2 = SeleniumController()
+                self.selenium2.worker_id = 2
+                self.driver2 = self.selenium2.start()
+                self.driver2.get(URL_INPI)
 
-            self.selenium3 = SeleniumController()
-            self.selenium3.worker_id = 3
-            self.driver3 = self.selenium3.start()
-            self.driver3.get(URL_INPI)
+                self.selenium3 = SeleniumController()
+                self.selenium3.worker_id = 3
+                self.driver3 = self.selenium3.start()
+                self.driver3.get(URL_INPI)
 
-            if self.btn_monitor_abas.isChecked():
-                for selenium in (self.selenium1, self.selenium2, self.selenium3):
-                    selenium.monitor_abas_ativo = True
-                    selenium.iniciar_monitor_abas()
+                if self._monitor_abas_ligado:
+                    for selenium in (self.selenium1, self.selenium2, self.selenium3):
+                        selenium.monitor_abas_ativo = True
+                        selenium.iniciar_monitor_abas()
 
-            self.log_new("✅ Três Chromes iniciados com sucesso")
+                self.log_new("✅ Três Chromes iniciados com sucesso")
 
-            self.iniciar_solver_auto()
-            self._ultimo_solver_click = 0
-            self.iniciar_monitor_captcha()
+                self.iniciar_solver_auto()
+                self._ultimo_solver_click = 0
+                self.iniciar_monitor_captcha()
 
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", str(e))
-            logger.exception("Erro durante processamento", str(e))
+                self.selenium_pronto_signal.emit(True, "")
+
+            except Exception as e:
+                logger.exception("Erro durante processamento")
+                self.selenium_pronto_signal.emit(False, str(e))
+
+            finally:
+                self._iniciando_selenium = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_selenium_pronto(self, sucesso, erro):
+        # roda na thread da UI (conectado via signal), seguro pra mexer em
+        # widgets
+        self.btn_iniciar.setEnabled(True)
+        if not sucesso:
+            QMessageBox.critical(self, "Erro", erro)
 
     def _usuario_atual(self, worker_id):
         if worker_id == 1:
@@ -644,10 +711,16 @@ class MainApp(QWidget):
             raise ValueError("Worker inválido")
 
     def obter_timeout(self) -> int:
+        # 🔧 FIX: mesma razao do obter_intervalo_reload — le o atributo
+        # cacheado em vez do widget, pra nao acessar QComboBox de fora da
+        # thread da UI.
+        return getattr(self, "_timeout_captcha", 120)
+
+    def _on_timeout_mudou(self, texto):
         try:
-            return int(self.combo_timeout.currentText())
+            self._timeout_captcha = int(texto)
         except ValueError:
-            return 120
+            pass
 
     def _atualizar_contador_ui(self):
         texto = f"Processos extraídos: {self.processos_extraidos} / {self.total_processos}"
@@ -720,6 +793,7 @@ class MainApp(QWidget):
 
     def toggle_monitor_abas(self):
         ativo = self.btn_monitor_abas.isChecked()
+        self._monitor_abas_ligado = ativo
         self.btn_monitor_abas.setText(
             "🧠 Monitor abas: ON" if ativo else "🧠 Monitor abas: OFF"
         )

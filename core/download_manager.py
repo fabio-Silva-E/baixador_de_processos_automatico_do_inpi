@@ -52,9 +52,18 @@ def _renomear_pdf_para_processo(self, worker_id, caminho_pdf):
                 self.log_new(f"🧹 Worker {worker_id} — limpando histórico de downloads...")
                 selenium = self._selenium_por_worker(worker_id)
                 selenium.limpar_historico_downloads()
-                self.log_new(f"✅ Worker {worker_id} — histórico limpo com sucesso")
+                self.log_new(f"✅ Worker {worker_id} — histórico de downloads limpo com sucesso")
             except Exception as e:
                 self.log_new(f"⚠️ Worker {worker_id} — Erro ao limpar histórico downloads: {e}")
+
+            # 🧹 Limpa o histórico de navegação do worker para não acumular URLs visitadas
+            try:
+                self.log_new(f"🧹 Worker {worker_id} — limpando histórico de navegação...")
+                selenium = self._selenium_por_worker(worker_id)
+                selenium.limpar_historico_navegacao()
+                self.log_new(f"✅ Worker {worker_id} — histórico de navegação limpo com sucesso")
+            except Exception as e:
+                self.log_new(f"⚠️ Worker {worker_id} — Erro ao limpar histórico de navegação: {e}")
 
         else:
             self.log_new(
