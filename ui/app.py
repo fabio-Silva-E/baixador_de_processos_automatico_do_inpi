@@ -1,11 +1,201 @@
 import os
+import subprocess
 import threading
 import time
+import sys
 import psutil
 import os
+from config.paths import BASE_DIR
+
+# INSTÂNCIA ÚNICA + LIMPEZA DE PROCESSOS ÓRFÃOS (só Windows)
+#
+# Resolve dois problemas:
+#   1) Fechar o programa pelo Gerenciador de Tarefas mata só o processo
+#      principal — os Chromes/chromedriver que ele abriu ficam órfãos,
+#      rodando pra sempre.
+#   2) Reabrir o programa nessas condições cria uma SEGUNDA instância
+#      inteira, empilhando programas e Chromes duplicados.
+#
+# Solução:
+#   - Job Object do Windows: todo Chrome/chromedriver aberto por este
+#     processo passa a "morrer junto" com ele, não importa como o
+#     processo principal seja encerrado (fechamento normal, crash, ou
+#     finalizado à força pelo Gerenciador de Tarefas).
+#   - Mutex nomeado: impede abrir uma segunda janela do programa
+#     enquanto já existe uma rodando.
+#   - Limpeza na abertura: mata qualquer chromedriver.exe/chrome.exe
+#     órfão de uma execução anterior a essa correção, identificado
+#     pelo caminho do projeto aparecendo na linha de comando.
+# =========================================================
+
+def _configurar_job_object_matar_filhos():
+    """Cria um Job Object do Windows e associa o processo atual a ele,
+    com JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — isso faz TODOS os processos
+    filhos (chromedriver.exe, que por sua vez abre chrome.exe) serem
+    finalizados automaticamente quando este processo morrer, de
+    qualquer jeito."""
+    import ctypes
+
+    try:
+        JobObjectExtendedLimitInformation = 9
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+
+        job = kernel32.CreateJobObjectW(None, None)
+
+        if not job:
+            print("⚠️ não consegui criar Job Object — limpeza automática de Chromes órfãos desativada")
+            return None
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        kernel32.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info)
+        )
+
+        processo_atual = kernel32.GetCurrentProcess()
+
+        ok = kernel32.AssignProcessToJobObject(job, processo_atual)
+
+        if not ok:
+            print("⚠️ não consegui associar o processo ao Job Object")
+            return None
+
+        print("🔒 Job Object configurado — Chromes abertos por este programa serão fechados junto com ele, mesmo se finalizado à força.")
+
+        return job
+
+    except Exception as e:
+        print(f"⚠️ erro configurando Job Object: {e}")
+        return None
+
+
+def _garantir_instancia_unica():
+    """Cria um mutex nomeado do Windows — se já existir (outra instância
+    do programa rodando), retorna False em vez de abrir uma segunda
+    janela."""
+    import ctypes
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW(None, False, "SeleniumBase_InterfaceExtracao_Mutex")
+        ERROR_ALREADY_EXISTS = 183
+        return ctypes.GetLastError() != ERROR_ALREADY_EXISTS
+
+    except Exception as e:
+        print(f"⚠️ erro checando instância única: {e}")
+        return True  # em caso de erro, deixa abrir normalmente
+
+
+def _limpar_processos_orfaos():
+    """Mata chromedriver.exe/chrome.exe órfãos de execuções anteriores a
+    essa correção, identificados pelo caminho do projeto aparecendo na
+    linha de comando (--user-data-dir apontando pra uma pasta
+    perfil_chrome_* deste projeto)."""
+    try:
+        base = str(BASE_DIR).replace("'", "''")
+
+        comando = (
+            "Get-CimInstance Win32_Process -Filter "
+            "\"Name='chromedriver.exe' or Name='chrome.exe'\" "
+            "| Where-Object { $_.CommandLine -like '*" + base + "*' } "
+            "| Select-Object -ExpandProperty ProcessId"
+        )
+
+        resultado = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", comando],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+
+        pids = [p.strip() for p in resultado.stdout.splitlines() if p.strip().isdigit()]
+
+        for pid in pids:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", pid],
+                    capture_output=True,
+                    timeout=5
+                )
+            except Exception:
+                pass
+
+        if pids:
+            print(f"🧹 {len(pids)} processo(s) órfão(s) de execuções anteriores finalizado(s).")
+
+    except Exception as e:
+        print(f"⚠️ não consegui checar processos órfãos: {e}")
+
+
+def _limpar_trava_webdriver_manager():
+    """Remove qualquer arquivo de trava (.wdm-lock-*) do webdriver-manager
+    que tenha ficado 'preso' de uma execução anterior morta à força —
+    sem isso, TODA tentativa futura de abrir um Chrome trava pra sempre
+    esperando essa trava liberar (erro 'Timed out waiting for
+    webdriver-manager lock'). Como já garantimos instância única do
+    programa antes de chegar aqui, não existe risco de apagar uma trava
+    de uma instância legítima ainda rodando."""
+    try:
+        pasta_wdm = Path.home() / ".wdm"
+
+        if not pasta_wdm.exists():
+            return
+
+        travas = list(pasta_wdm.glob(".wdm-lock-*"))
+
+        for trava in travas:
+            try:
+                trava.unlink()
+                print(f"🔓 Trava presa do webdriver-manager removida: {trava.name}")
+            except Exception as e:
+                print(f"⚠️ não consegui remover trava {trava.name}: {e}")
+
+    except Exception as e:
+        print(f"⚠️ não consegui checar travas do webdriver-manager: {e}")
+
 
 from config.paths import DOWNLOAD_DIR
 from config.settings import URL_INPI
+from core.perfil_manager import resetar_todos_perfis
 from core.selenium_controller import SeleniumController
 from core.licenca import dias_restantes
 from config.paths import BASE_DIR
@@ -85,6 +275,7 @@ sys.excepthook = global_exception
 
 
 class MainApp(QWidget):
+    resetar_todos_perfis = resetar_todos_perfis
     dias_restantes = dias_restantes
     aguardar_botao_download = aguardar_botao_download
     captcha_travado = captcha_travado
@@ -132,6 +323,7 @@ class MainApp(QWidget):
                     1: threading.RLock(),
                     2: threading.RLock(),
                     3: threading.RLock(),
+                    4: threading.RLock(),
                 }
         fault_log = open(
             "faulthandler.log",
@@ -173,12 +365,14 @@ class MainApp(QWidget):
         self.captcha_estado = {
             1: False,
             2: False,
-            3: False
+            3: False,
+            4: False
         }
         self.captcha_retry = {
             1: False,
             2: False,
-            3: False
+            3: False,
+            4: False
         }
 
         self.log_signal.connect(self._log_ui)
@@ -193,12 +387,18 @@ class MainApp(QWidget):
         # 1️⃣ Flags e dados
         self.parar_loop = False
         self.loop_ativo = False
-        self.processando = {1: False, 2: False, 3: False}
+
+        # 🔢 quantidade de workers/navegadores em paralelo (1 a 4) — 4
+        # workers exige um 4º login (aba extra na coluna de login)
+        self._qtd_workers = 3
+
+        self.processando = {1: False, 2: False, 3: False, 4: False}
 
         self.numero_atual = {
             1: None,
             2: None,
-            3: None
+            3: None,
+            4: None
         }
 
         self.indice_processo = 0
@@ -227,7 +427,7 @@ class MainApp(QWidget):
             p for p in self.processos
             if p not in self.processos_concluidos
         ]
-        for wid in (1, 2, 3):
+        for wid in (1, 2, 3, 4):
             pasta = Path(DOWNLOAD_DIR) / f"worker_{wid}"
             pasta.mkdir(parents=True, exist_ok=True)
             self.download_dirs[wid] = pasta
@@ -237,6 +437,7 @@ class MainApp(QWidget):
             self.combo_usuario.addItem(u["usuario"])
             self.combo_usuario_2.addItem(u["usuario"])
             self.combo_usuario_3.addItem(u["usuario"])
+            self.combo_usuario_4.addItem(u["usuario"])
 
         # conecta primeiro
         self.combo_usuario.currentIndexChanged.connect(
@@ -251,12 +452,21 @@ class MainApp(QWidget):
             self.on_usuario_selecionado_3
         )
 
+        self.combo_usuario_4.currentIndexChanged.connect(
+            self.on_usuario_selecionado_4
+        )
+
         # depois restaura
         self.carregar_configuracoes()
         # 🔌 CONECTA OS COMBOS AOS MÉTODOS
         self.combo_usuario.currentIndexChanged.connect(self.on_usuario_selecionado)
         self.combo_usuario_2.currentIndexChanged.connect(self.on_usuario_selecionado_2)
         self.combo_usuario_3.currentIndexChanged.connect(self.on_usuario_selecionado_3)
+        self.combo_usuario_4.currentIndexChanged.connect(self.on_usuario_selecionado_4)
+
+        # aplica a visibilidade correta do Login Aba 4 conforme a
+        # quantidade de workers restaurada de config_ui.txt
+        self._atualizar_visibilidade_worker4()
 
     def _criar_interface(self):
         self.setWindowTitle("INPI - vs(1.4)")
@@ -280,6 +490,8 @@ class MainApp(QWidget):
         self.btn_monitor_abas.clicked.connect(self.toggle_monitor_abas)
 
         coluna_login.addWidget(self.btn_monitor_abas)
+
+
         # ===== dropdown de timeout =====
         coluna_login.addWidget(QLabel("Timeout Captcha (segundos)"))
 
@@ -301,6 +513,14 @@ class MainApp(QWidget):
         self._intervalo_reload = 3
         self.combo_intervalo_reload.currentTextChanged.connect(self._on_intervalo_reload_mudou)
         coluna_login.addWidget(self.combo_intervalo_reload)
+
+        # ===== QUANTIDADE DE WORKERS =====
+        coluna_login.addWidget(QLabel("🧵 Quantidade de Workers"))
+        self.combo_qtd_workers = QComboBox()
+        self.combo_qtd_workers.addItems(["1", "2", "3", "4"])
+        self.combo_qtd_workers.setCurrentText("3")
+        self.combo_qtd_workers.currentTextChanged.connect(self._on_qtd_workers_mudou)
+        coluna_login.addWidget(self.combo_qtd_workers)
 
         # ===== USUÁRIO 1 =====
         coluna_login.addWidget(QLabel("Login Aba 1"))
@@ -347,9 +567,38 @@ class MainApp(QWidget):
         coluna_login.addWidget(self.input_usuario_3)
         coluna_login.addWidget(self.input_senha_3)
 
+        # ===== USUÁRIO 4 (só aparece com 4 workers selecionados) =====
+        self.widget_login_4 = QWidget()
+        layout_login_4 = QVBoxLayout(self.widget_login_4)
+        layout_login_4.setContentsMargins(0, 0, 0, 0)
+
+        layout_login_4.addWidget(QLabel("Login Aba 4"))
+        self.combo_usuario_4 = QComboBox()
+        self.combo_usuario_4.addItem("Selecione o usuário INPI")
+        self.combo_usuario_4.model().item(0).setEnabled(False)
+
+        self.input_usuario_4 = QLineEdit()
+        self.input_senha_4 = QLineEdit()
+        self.input_senha_4.setEchoMode(QLineEdit.Password)
+
+        layout_login_4.addWidget(self.combo_usuario_4)
+        layout_login_4.addWidget(self.input_usuario_4)
+        layout_login_4.addWidget(self.input_senha_4)
+
+        self.widget_login_4.setVisible(False)
+        coluna_login.addWidget(self.widget_login_4)
+
         self.btn_iniciar = QPushButton("🌐 Abrir site INPI")
         self.btn_iniciar.clicked.connect(self.iniciar_selenium)
         coluna_login.addWidget(self.btn_iniciar)
+
+        # 🧹 reseta cookies/cache/sessão de TODOS os perfis de navegador já
+        # usados pelo programa (chrome, edge, brave — o que existir em
+        # disco), preservando extensões instaladas manualmente (Modo
+        # Desenvolvedor)
+        self.btn_resetar_perfis_login = QPushButton("🧹 Resetar Perfis dos Navegadores")
+        self.btn_resetar_perfis_login.clicked.connect(self.resetar_perfis_navegador)
+        coluna_login.addWidget(self.btn_resetar_perfis_login)
 
         coluna_login.addStretch()
 
@@ -368,6 +617,17 @@ class MainApp(QWidget):
         self.entry_processo.setPlaceholderText("Número do processo")
         coluna_processos.addWidget(self.entry_processo)
 
+
+        # 🔧 FIX: antes chamava resetar_perfis_chrome, uma função quebrada
+        # (só olhava a pasta "chrome", passava o nome do PERFIL em vez do
+        # nome do NAVEGADOR pra resetar_todos_perfis, usava tkinter.messagebox
+        # num app Qt, e referenciava self.status que não existe nesta UI).
+        # Agora os dois botões de reset usam a mesma função corrigida.
+        self.btn_resetar_perfis_processos = QPushButton("🧹 Resetar Perfis dos Navegadores")
+        self.btn_resetar_perfis_processos.clicked.connect(self.resetar_perfis_navegador)
+        coluna_processos.addWidget(self.btn_resetar_perfis_processos)
+
+        
         self.btn_buscar = QPushButton("▶ Iniciar extração")
         self.btn_buscar.clicked.connect(self.iniciar_processamento_em_lote)
         coluna_processos.addWidget(self.btn_buscar)
@@ -483,6 +743,19 @@ class MainApp(QWidget):
         except ValueError:
             self._intervalo_reload = 3
 
+    def _on_qtd_workers_mudou(self, texto):
+        try:
+            self._qtd_workers = int(texto)
+        except ValueError:
+            self._qtd_workers = 3
+        self._atualizar_visibilidade_worker4()
+
+    def _atualizar_visibilidade_worker4(self):
+        # 🔥 4 workers exige um 4º login — o bloco "Login Aba 4" só
+        # aparece quando 4 workers estão selecionados
+        if hasattr(self, "widget_login_4"):
+            self.widget_login_4.setVisible(self._qtd_workers >= 4)
+
     def trocar_vpn(self):
         self.log_new("BOTÃO CLICADO")
         self.label_ip.setText("🔄 Trocando VPN...")
@@ -507,6 +780,15 @@ class MainApp(QWidget):
         self.input_usuario_3.setText(user["usuario"])
         self.input_senha_3.setText(user["senha"])
 
+    def on_usuario_selecionado_4(self, index):
+        if index <= 0:
+            self.input_usuario_4.clear()
+            self.input_senha_4.clear()
+            return
+        user = self.usuarios[index - 1]
+        self.input_usuario_4.setText(user["usuario"])
+        self.input_senha_4.setText(user["senha"])
+
     def on_usuario_selecionado(self, index):
         if index == 0:
             self.input_usuario.clear()
@@ -516,11 +798,12 @@ class MainApp(QWidget):
         self.input_usuario.setText(user["usuario"])
         self.input_senha.setText(user["senha"])
 
+
     def parar_processamento(self):
         if not self.loop_ativo:
             return
         self.loop_ativo = False
-        self.processando = {1: False, 2: False, 3: False}
+        self.processando = {1: False, 2: False, 3: False, 4: False}
         self.log("🛑 Processamento interrompido pelo usuário.")
         self.label_status.setText("Status: parado")
         self.lista_processos.setEnabled(True)
@@ -537,10 +820,12 @@ class MainApp(QWidget):
     from collections import deque
 
     def iniciar_processamento_em_lote(self):
-        if not all(hasattr(self, f"driver{i}") for i in (1, 2, 3)):
+        workers_ativos = list(range(1, self._qtd_workers + 1))
+
+        if not all(hasattr(self, f"driver{i}") for i in workers_ativos):
             self.ui_warning(
                 "Chrome não iniciado",
-                "Abra os três Chromes antes de iniciar a extração."
+                f"Abra os {len(workers_ativos)} Chrome(s) antes de iniciar a extração."
             )
             self.log_new("⚠️ Tentativa de iniciar lote sem Chromes abertos.")
             return
@@ -552,27 +837,20 @@ class MainApp(QWidget):
         self.loop_ativo = True
         self.lista_processos.setEnabled(False)
 
-        self.processos_1 = deque()
-        self.processos_2 = deque()
-        self.processos_3 = deque()
+        self.processos_filas = {wid: deque() for wid in workers_ativos}
 
         for i, p in enumerate(self.processos):
-            if i % 3 == 0:
-                self.processos_1.append(p)
-            elif i % 3 == 1:
-                self.processos_2.append(p)
-            else:
-                self.processos_3.append(p)
+            wid = workers_ativos[i % len(workers_ativos)]
+            self.processos_filas[wid].append(p)
 
         self.total_processos = len(self.processos)
         self.processos_extraidos = 0
         self._atualizar_contador_ui()
 
-        self.log_new("🚀 Iniciando processamento em lote (3 Chromes)...")
+        self.log_new(f"🚀 Iniciando processamento em lote ({len(workers_ativos)} Chrome(s))...")
 
-        self._processar_proximo(1)
-        self._processar_proximo(2)
-        self._processar_proximo(3)
+        for wid in workers_ativos:
+            self._processar_proximo(wid)
 
     def carregar_usuarios_excel(self):
         self.usuarios = []
@@ -607,7 +885,7 @@ class MainApp(QWidget):
         logger.error(mensagem)
 
     def iniciar_selenium(self):
-        # 🔧 FIX: abrir os 3 navegadores e navegar ate URL_INPI faz chamadas
+        # 🔧 FIX: abrir os navegadores e navegar ate URL_INPI faz chamadas
         # de rede (driver.get) que, numa maquina com internet mais lenta,
         # podem travar por bastante tempo. Como esse metodo roda direto no
         # slot do clique do botao (thread da UI/Qt), um travamento aqui
@@ -619,40 +897,40 @@ class MainApp(QWidget):
             return
         self._iniciando_selenium = True
         self.btn_iniciar.setEnabled(False)
-        self.log("Iniciando 3 Chromes independentes...")
+
+        workers_ativos = list(range(1, self._qtd_workers + 1))
+        self.log(f"Iniciando {len(workers_ativos)} Chrome(s) independente(s)...")
 
         def worker():
             try:
-                if hasattr(self, "driver1") and self.driver1:
-                    self.selenium1.stop()
-                if hasattr(self, "driver2") and self.driver2:
-                    self.selenium2.stop()
-                if hasattr(self, "driver3") and self.driver3:
-                    self.selenium3.stop()
+                # encerra qualquer sessão anterior (inclusive de uma
+                # quantidade de workers diferente da atual)
+                for wid in (1, 2, 3, 4):
+                    selenium_antigo = getattr(self, f"selenium{wid}", None)
+                    driver_antigo = getattr(self, f"driver{wid}", None)
+                    if selenium_antigo and driver_antigo:
+                        selenium_antigo.stop()
 
                 time.sleep(3)
 
-                self.selenium1 = SeleniumController()
-                self.selenium1.worker_id = 1
-                self.driver1 = self.selenium1.start()
-                self.driver1.get(URL_INPI)
+                seleniums_novos = []
 
-                self.selenium2 = SeleniumController()
-                self.selenium2.worker_id = 2
-                self.driver2 = self.selenium2.start()
-                self.driver2.get(URL_INPI)
+                for wid in workers_ativos:
+                    selenium_novo = SeleniumController()
+                    selenium_novo.worker_id = wid
+                    driver_novo = selenium_novo.start()
+                    driver_novo.get(URL_INPI)
 
-                self.selenium3 = SeleniumController()
-                self.selenium3.worker_id = 3
-                self.driver3 = self.selenium3.start()
-                self.driver3.get(URL_INPI)
+                    setattr(self, f"selenium{wid}", selenium_novo)
+                    setattr(self, f"driver{wid}", driver_novo)
+                    seleniums_novos.append(selenium_novo)
 
                 if self._monitor_abas_ligado:
-                    for selenium in (self.selenium1, self.selenium2, self.selenium3):
+                    for selenium in seleniums_novos:
                         selenium.monitor_abas_ativo = True
                         selenium.iniciar_monitor_abas()
 
-                self.log_new("✅ Três Chromes iniciados com sucesso")
+                self.log_new(f"✅ {len(workers_ativos)} Chrome(s) iniciado(s) com sucesso")
 
                 self.iniciar_solver_auto()
                 self._ultimo_solver_click = 0
@@ -676,6 +954,67 @@ class MainApp(QWidget):
         if not sucesso:
             QMessageBox.critical(self, "Erro", erro)
 
+    def resetar_perfis_navegador(self):
+        """
+        Limpa cookies/cache/histórico/sessão de TODOS os perfis de
+        navegador já usados pelo programa (profile_1, profile_2, ...),
+        preservando extensões instaladas manualmente. Sempre reseta os
+        perfis do Chrome (navegador usado por este usuário) e também os
+        do navegador atualmente selecionado no combo, caso seja outro.
+        """
+        confirmar = QMessageBox.question(
+            self,
+            "Resetar perfis do Chrome",
+            "Isso vai limpar cookies/cache/histórico/sessão de TODOS os "
+            "perfis do Chrome usados pelo programa (profile_1, profile_2, "
+            "etc.), preservando as extensões instaladas manualmente.\n\n"
+            "⚠️ Feche todas as janelas do Chrome abertas pelo programa "
+            "antes de continuar — com o navegador aberto, o reset pode "
+            "falhar em alguns arquivos.\n\n"
+            "Deseja continuar?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if confirmar != QMessageBox.Yes:
+            return
+
+        from core.perfil_manager import resetar_todos_perfis
+        from config.paths import PROFILE_PATH
+
+        # 🔧 FIX: varre TODAS as subpastas de navegador que já existirem em
+        # disco (chrome, edge, brave, ...) em vez de supor só "chrome" + o
+        # navegador selecionado no combo no momento — do jeito antigo,
+        # perfis de um navegador usado no passado (mas não selecionado
+        # agora) nunca eram limpos.
+        if PROFILE_PATH.exists():
+            navegadores = sorted(p.name for p in PROFILE_PATH.iterdir() if p.is_dir())
+        else:
+            navegadores = []
+
+        resetados_total = []
+
+        for navegador in navegadores:
+            resetados = resetar_todos_perfis(navegador)
+            for nome in resetados:
+                identificador = f"{navegador}/{nome}"
+                resetados_total.append(identificador)
+                self.log_new(f"🧹 Perfil resetado: {identificador}")
+
+        if not resetados_total:
+            self.log_new("⚠️ Nenhum perfil encontrado para resetar")
+            QMessageBox.information(
+                self,
+                "Resetar perfis",
+                "Nenhum perfil encontrado (nenhum navegador foi aberto ainda pelo programa)."
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Concluído",
+            f"{len(resetados_total)} perfil(is) resetado(s):\n" + "\n".join(resetados_total)
+        )
+
     def _usuario_atual(self, worker_id):
         if worker_id == 1:
             return self.input_usuario
@@ -683,6 +1022,8 @@ class MainApp(QWidget):
             return self.input_usuario_2
         elif worker_id == 3:
             return self.input_usuario_3
+        elif worker_id == 4:
+            return self.input_usuario_4
         return None
 
     def _senha_atual(self, worker_id):
@@ -692,6 +1033,8 @@ class MainApp(QWidget):
             return self.input_senha_2
         elif worker_id == 3:
             return self.input_senha_3
+        elif worker_id == 4:
+            return self.input_senha_4
         return None
 
     def ui_toast(self, mensagem, tempo=2000):
@@ -707,8 +1050,16 @@ class MainApp(QWidget):
             return self.selenium2
         elif worker_id == 3:
             return self.selenium3
+        elif worker_id == 4:
+            return self.selenium4
         else:
             raise ValueError("Worker inválido")
+
+    def _worker_id_por_driver(self, driver):
+        for wid in range(1, self._qtd_workers + 1):
+            if getattr(self, f"driver{wid}", None) is driver:
+                return wid
+        return None
 
     def obter_timeout(self) -> int:
         # 🔧 FIX: mesma razao do obter_intervalo_reload — le o atributo
@@ -754,6 +1105,8 @@ class MainApp(QWidget):
                 f.write(f"{self.combo_timeout.currentText()}\n")
                 f.write(f"{self.combo_intervalo_reload.currentText()}\n")
                 f.write(f"{self.combo_navegador.currentText()}\n")
+                f.write(f"{self.combo_usuario_4.currentIndex()}\n")
+                f.write(f"{self.combo_qtd_workers.currentText()}\n")
         except Exception as e:
             self.log_new(f"⚠️ Erro ao salvar configurações: {e}")
 
@@ -773,6 +1126,10 @@ class MainApp(QWidget):
                 self.on_usuario_selecionado(self.combo_usuario.currentIndex())
                 self.on_usuario_selecionado_2(self.combo_usuario_2.currentIndex())
                 self.on_usuario_selecionado_3(self.combo_usuario_3.currentIndex())
+            if len(linhas) >= 8:
+                self.combo_usuario_4.setCurrentIndex(int(linhas[6]))
+                self.combo_qtd_workers.setCurrentText(linhas[7])
+                self.on_usuario_selecionado_4(self.combo_usuario_4.currentIndex())
         except Exception as e:
             self.log_new(f"⚠️ Erro ao carregar configurações: {e}")
 
@@ -780,16 +1137,15 @@ class MainApp(QWidget):
         self.salvar_posicao_janela()
         self.salvar_configuracoes()
         try:
-            if hasattr(self, "selenium1"):
-                self.selenium1.stop()
-            if hasattr(self, "selenium2"):
-                self.selenium2.stop()
-            if hasattr(self, "selenium3"):
-                self.selenium3.stop()
+            for wid in (1, 2, 3, 4):
+                selenium = getattr(self, f"selenium{wid}", None)
+                if selenium:
+                    selenium.stop()
         except Exception:
             logger.exception("Erro durante processamento")
             pass
         event.accept()
+
 
     def toggle_monitor_abas(self):
         ativo = self.btn_monitor_abas.isChecked()
@@ -798,7 +1154,7 @@ class MainApp(QWidget):
             "🧠 Monitor abas: ON" if ativo else "🧠 Monitor abas: OFF"
         )
         self.log("🟢 Monitor ATIVADO" if ativo else "🔴 Monitor DESATIVADO")
-        for attr in ("selenium1", "selenium2", "selenium3"):
+        for attr in ("selenium1", "selenium2", "selenium3", "selenium4"):
             selenium = getattr(self, attr, None)
             if not selenium:
                 continue

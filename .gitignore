@@ -20,3 +20,7 @@ build/
 dist/
 *.exe
 *.pkg
+
+# Logs
+logs/*.log
+

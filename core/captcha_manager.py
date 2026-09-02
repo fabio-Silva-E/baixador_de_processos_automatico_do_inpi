@@ -44,7 +44,9 @@ def _loop_monitor_captcha(self):
 
     while self._monitor_captcha_ativo:
 
-        for worker_id in (1, 2, 3):
+        # 🔧 FIX: faltava o worker 4 nessa varredura — captchas travados no
+        # 4º navegador nunca eram detectados/logados por este monitor.
+        for worker_id in (1, 2, 3, 4):
 
             driver = getattr(
                 self,
@@ -89,7 +91,9 @@ def iniciar_solver_auto(self):
 
 
 def detectar_worker_com_captcha(self):
-    for wid in (1, 2, 3):
+    # 🔧 FIX: faltava o worker 4 — se o captcha aparecesse só no 4º
+    # navegador, o solver automático nunca o encontrava nesta varredura.
+    for wid in (1, 2, 3, 4):
         lock = self._driver_locks[wid]
         driver = getattr(self, f"driver{wid}", None)
 
@@ -164,8 +168,13 @@ def clicar_solver_button(self):
             self.log_new("⚠️ Solver button não encontrado na tela")
             return False
 
-    except:
-        pass
+    except Exception as e:
+        # 🔧 FIX: engolir o erro sem logar deixava falhas de PyAutoGUI
+        # (ex.: escala de tela/DPI diferente, falha de captura de tela)
+        # completamente invisíveis no log — parecia que "nada acontecia",
+        # sem nenhuma pista do motivo.
+        self.log_new(f"⚠️ Erro ao localizar/clicar solver_button: {e}")
+        return False
 
 def clicar_try_again(self, confidence=0.8):
 
@@ -199,15 +208,20 @@ def clicar_try_again(self, confidence=0.8):
             self.log("🔄 Botão Try Again clicado!")
 
             # 🔥 libera novamente os workers
-            for wid in (1, 2, 3):
+            # 🔧 FIX: faltava o worker 4 — ele nunca era liberado depois de um
+            # "Try Again", ficando preso esperando um retry que nunca chegava.
+            for wid in (1, 2, 3, 4):
                 self.captcha_retry[wid] = True
 
             return True
 
         return False
 
-    except:
-        pass
+    except Exception as e:
+        # 🔧 FIX: mesmo motivo do clicar_solver_button — log em vez de
+        # engolir o erro silenciosamente.
+        self.log_new(f"⚠️ Erro ao localizar/clicar try_again: {e}")
+        return False
 
 def tratar_modal_captcha(self, driver, worker_id):
 

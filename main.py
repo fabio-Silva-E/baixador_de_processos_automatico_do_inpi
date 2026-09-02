@@ -11,6 +11,24 @@ import socket
 # única vez, no momento do import.
 socket.setdefaulttimeout(30)
 
+# 🔧 FIX: declara o processo como DPI-aware pro Windows. Sem isso, em
+# qualquer maquina com escala de tela != 100% (muito comum em notebooks
+# novos, Windows costuma vir com 125%/150% por padrao), o Windows
+# "virtualiza" a resolucao pro processo — as imagens de referencia do
+# PyAutoGUI (solver_button.png, botao_try_again.png etc, capturadas a
+# 100%) deixam de bater com o que a tela realmente mostra, e
+# locateOnScreen() simplesmente nao encontra nada ("nenhuma acao").
+# Precisa vir o mais cedo possivel, antes de qualquer screenshot ou
+# janela ser criada.
+import ctypes
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import logging
 import threading
 import traceback

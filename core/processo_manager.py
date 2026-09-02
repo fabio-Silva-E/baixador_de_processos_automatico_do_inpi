@@ -125,6 +125,47 @@ def atualizar_lista_processos(self):
         )
         self.log_new(f"Falha ao carregar processos do Excel")
 
+
+#def possui_servico_389_ou_394(self, driver) -> bool:
+#    """
+#    Retorna True apenas se existir serviço 389 ou 394
+#    e NÃO existir nenhum dos serviços bloqueadores.
+#    """
+#
+#    # Serviços que impedem o retorno True
+#    servicos_bloqueadores = [
+#        "161", "304", "414", "530",
+#        "301", "303", "305", "401", "507"
+#    ]
+#
+#    try:
+#        # Verifica se existe algum serviço bloqueador
+#        xpath_bloqueadores = (
+#            "//a[normalize-space()="
+#            + " or normalize-space()=".join(f"'{s}'" for s in servicos_bloqueadores)
+#            + "]"
+#        )
+#
+#        driver.find_element(By.XPATH, xpath_bloqueadores)
+#        self.log("🚫 Serviço bloqueador encontrado")
+#        return False
+#
+#    except NoSuchElementException:
+#        pass
+#
+#    try:
+#        # Verifica se existe 389 ou 394
+#        driver.find_element(
+#            By.XPATH,
+#            "//a[normalize-space()='389' or normalize-space()='394']"
+#        )
+#        self.log("📄 Serviço 389 ou 394 detectado")
+#        return True
+#
+#    except NoSuchElementException:
+#        self.log_new("📄 Serviço 389/394 NÃO encontrado")
+#        return False
+
 def possui_servico_389_ou_394(self, driver) -> bool:
     """
     Verifica se existe serviço 389 ou 394 na tabela de PDFs

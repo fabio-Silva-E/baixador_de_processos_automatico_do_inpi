@@ -17,10 +17,16 @@ class SeleniumWorker(QThread):
         try:
             print(f"THREAD START {self.worker_id}")
 
+            # 🔧 FIX: usar getattr em vez de self.app.driverN direto — o
+            # dict literal avalia TODAS as chaves na hora, e quando rodando
+            # com menos de 4 workers o atributo driver4 nem existe no app,
+            # o que ia estourar AttributeError pra QUALQUER worker (1, 2 ou
+            # 3), não só quando worker_id fosse 4.
             driver = {
-                1: self.app.driver1,
-                2: self.app.driver2,
-                3: self.app.driver3
+                1: getattr(self.app, "driver1", None),
+                2: getattr(self.app, "driver2", None),
+                3: getattr(self.app, "driver3", None),
+                4: getattr(self.app, "driver4", None),
             }.get(self.worker_id)
 
             if driver is None:
@@ -47,13 +53,13 @@ def _processar_proximo(self, worker_id):
         self.log_new(f"⛔ Worker {worker_id} já está processando")
         return
 
-    if worker_id == 1:
-        fila = self.processos_1
-    elif worker_id == 2:
-        fila = self.processos_2
-    elif worker_id == 3:
-        fila = self.processos_3
-    else:
+    # 🔧 FIX: não existia self.processos_1/2/3 em lugar nenhum — quem
+    # guarda as filas de processos por worker é self.processos_filas
+    # (dict criado em iniciar_processamento_em_lote, em app.py). Ler um
+    # atributo processos_N inexistente estourava AttributeError assim
+    # que o primeiro worker tentava começar.
+    fila = getattr(self, "processos_filas", {}).get(worker_id)
+    if fila is None:
         self.log_new(f"❌ Worker inválido: {worker_id}")
         return
 

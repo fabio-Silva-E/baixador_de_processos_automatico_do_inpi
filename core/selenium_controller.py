@@ -60,13 +60,41 @@ class SeleniumController:
         self.monitor_abas_thread = threading.Thread(target=monitor, daemon=True)
         self.monitor_abas_thread.start()
 
+
+    def _marcar_perfil_como_fechado_normalmente(self, profile_path):
+        """
+        Edita o arquivo Preferences do perfil do Chrome/Edge para marcar
+        que a sessão anterior fechou normalmente, evitando o popup
+        "Restaurar páginas?" que trava a automação quando o navegador é
+        morto abruptamente (crash, kill por PID, etc).
+        """
+        import json
+        from pathlib import Path
+
+        prefs_path = Path(profile_path) / "Default" / "Preferences"
+        if not prefs_path.exists():
+            return  # perfil novo, sem estado anterior — nada a corrigir
+
+        try:
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+
+            dados.setdefault("profile", {})
+            dados["profile"]["exit_type"] = "Normal"
+            dados["profile"]["exited_cleanly"] = True
+
+            with open(prefs_path, "w", encoding="utf-8") as f:
+                json.dump(dados, f)
+        except Exception as e:
+            print(f"[selenium] não foi possível corrigir Preferences: {e}")
+
+
     def start(self):
         navegador = SeleniumController.NAVEGADOR
         worker_id = getattr(self, "worker_id", 1)
 
         profile_path = Path(PROFILE_PATH) / navegador / f"profile_{worker_id}"
         profile_path.mkdir(parents=True, exist_ok=True)
-
         download_dir = Path(DOWNLOAD_DIR) / f"worker_{worker_id}"
         download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,6 +116,7 @@ class SeleniumController:
         self._remote_debug_port = debug_port
 
         self._aguardar_rede_estavel()
+        self._marcar_perfil_como_fechado_normalmente(profile_path)
 
         if navegador == "edge":
             from selenium.webdriver.edge.service import Service
@@ -173,7 +202,23 @@ class SeleniumController:
 
         self.download_dir = download_dir
         self.profile_path = profile_path
-        self.driver.set_window_size(600, 720)
+
+        # 🔧 FIX: 480px de largura (em vez de 600) — com os 4 workers em
+        # fila horizontal, 4 × 480 = 1920px, cabendo exatamente numa tela
+        # Full HD (1920x1080) sem nenhuma janela sair da área visível.
+        LARGURA_JANELA = 480
+        ALTURA_JANELA = 720
+        self.driver.set_window_size(LARGURA_JANELA, ALTURA_JANELA)
+
+        # 🆕 posiciona a janela automaticamente conforme o worker_id, todas
+        # numa única fila horizontal (lado a lado) — nunca em mais de uma
+        # linha, mesmo com os 4 workers abertos ao mesmo tempo.
+        pos_x = (worker_id - 1) * LARGURA_JANELA
+        pos_y = 0
+        try:
+            self.driver.set_window_position(pos_x, pos_y)
+        except Exception as e:
+            print(f"[selenium] não consegui posicionar a janela do worker {worker_id}: {e}")
 
         # 🔧 FIX: sem timeout no cliente HTTP do Selenium, uma chamada travada
         # ao chromedriver (socket que nunca recebe resposta) bloqueia a
@@ -225,6 +270,7 @@ class SeleniumController:
         options.add_argument("--disable-features=DownloadBubble,DownloadBubbleV2,DownloadShelf")
         options.add_argument("--disable-download-notification")
         options.add_argument("--remote-allow-origins=*")
+        options.add_argument("--disable-session-crashed-bubble")
 
     # ==================================================
     # 🧹 LIMPAR HISTÓRICO DE DOWNLOADS via chrome://downloads
@@ -485,7 +531,15 @@ class SeleniumController:
     # 🛑 STOP
     # ==================================================
     def stop(self):
-        self.parar_monitor_abas()
+        # 🔧 FIX: `parar_monitor_abas()` nunca existiu como metodo — so
+        # existe a flag monitor_abas_ativo, checada no loop de
+        # iniciar_monitor_abas. Chamar um metodo inexistente aqui lançava
+        # AttributeError na PRIMEIRA linha de stop(), interrompendo a
+        # funcao ali mesmo e pulando o driver.quit() e a limpeza de
+        # processo zumbi por PID logo abaixo — ou seja, o fix anterior
+        # contra processos zumbis nunca chegou a rodar de verdade. Esse
+        # erro aparecia (mascarado) toda vez que uma sessao reiniciava.
+        self.monitor_abas_ativo = False
 
         # 🔧 FIX: driver.quit() manda um comando HTTP pro chromedriver e
         # espera resposta — se o chromedriver ja tiver crashado/travado

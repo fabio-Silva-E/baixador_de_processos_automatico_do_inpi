@@ -80,11 +80,14 @@ def garantir_login(self, driver):
     # LOGIN
     # ======================
     try:
-        worker_id = (
-            1 if driver == self.driver1 else
-            2 if driver == self.driver2 else
-            3
-        )
+        # 🔧 FIX: a lógica antiga assumia "se não for driver1 nem driver2,
+        # é driver3" — com o 4º worker isso identificava ERRADO o worker_id
+        # de driver4 como sendo 3, fazendo o login usar o usuário/senha do
+        # worker 3 no navegador do worker 4. Usa _worker_id_por_driver, que
+        # já existe no app e cobre até 4 workers corretamente.
+        worker_id = self._worker_id_por_driver(driver)
+        if worker_id is None:
+            raise Exception("Driver não corresponde a nenhum worker ativo")
         self.login_inpi(
             driver,
             self._usuario_atual(worker_id),
@@ -157,9 +160,25 @@ def reiniciar_sessao_worker(self, worker_id):
     elif worker_id == 3:
         self.selenium3 = novo_selenium
         self.driver3 = novo_driver
+    elif worker_id == 4:
+        # 🔧 FIX: faltava o worker 4 aqui — quando a sessão dele morria
+        # por lentidão de rede (ou qualquer outro motivo) e o sistema
+        # tentava reiniciar, um novo navegador até abria, mas nunca era
+        # atribuído a self.selenium4/self.driver4. O worker 4 ficava
+        # "perdido": o código continuava usando o driver ANTIGO (morto),
+        # travado pra sempre, enquanto o navegador novo ficava órfão
+        # aberto sem nunca ser usado.
+        self.selenium4 = novo_selenium
+        self.driver4 = novo_driver
 
     try:
-        if self.btn_monitor_abas.isChecked():
+        # 🔧 FIX: usa o atributo cacheado _monitor_abas_ligado (mesmo padrao
+        # ja usado em iniciar_selenium/toggle_monitor_abas) em vez de ler
+        # btn_monitor_abas.isChecked() direto — essa funcao roda dentro da
+        # QThread do worker, e widgets do Qt nao sao thread-safe (causa
+        # classica do crash 0xc0000409 no Qt5Core.dll confirmado no Event
+        # Viewer).
+        if getattr(self, "_monitor_abas_ligado", True):
             novo_selenium.monitor_abas_ativo = True
             novo_selenium.iniciar_monitor_abas()
     except Exception:
@@ -228,13 +247,14 @@ def liberar_acesso_peticiones(self, driver):
     # enquanto trabalhamos na popup, igual já é feito em
     # limpar_historico_downloads/limpar_historico_navegacao.
     try:
-        worker_id = (
-            1 if driver == self.driver1 else
-            2 if driver == self.driver2 else
-            3
-        )
-        selenium_ctrl = self._selenium_por_worker(worker_id)
-        selenium_ctrl.bloquear_fechamento_abas = True
+        # 🔧 FIX: mesmo problema do garantir_login — "driver4" caia no
+        # else e era tratado como worker 3, fazendo o bloqueio de
+        # fechamento de abas (bloquear_fechamento_abas) e a popup de
+        # amplo acesso serem manipulados no SeleniumController ERRADO.
+        worker_id = self._worker_id_por_driver(driver)
+        selenium_ctrl = self._selenium_por_worker(worker_id) if worker_id else None
+        if selenium_ctrl:
+            selenium_ctrl.bloquear_fechamento_abas = True
     except Exception:
         selenium_ctrl = None
 
