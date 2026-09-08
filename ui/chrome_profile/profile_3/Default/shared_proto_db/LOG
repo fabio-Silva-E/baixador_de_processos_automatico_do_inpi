@@ -1,3 +1,15 @@
-2026/05/10-22:12:18.675 4764 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\shared_proto_db/MANIFEST-000001
-2026/05/10-22:12:18.675 4764 Recovering log #7
-2026/05/10-22:12:18.676 4764 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\shared_proto_db/000007.log 
+2026/06/17-20:21:37.645 5694 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\shared_proto_db/MANIFEST-000001
+2026/06/17-20:21:37.645 5694 Recovering log #40
+2026/06/17-20:21:37.648 5694 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_3\Default\shared_proto_db/000040.log 
+2026/06/17-20:34:52.915 3bc8 Level-0 table #44: started
+2026/06/17-20:34:52.918 3bc8 Level-0 table #44: 111445 bytes OK
+2026/06/17-20:34:52.919 3bc8 Delete type=0 #40
+2026/06/17-20:34:52.919 3bc8 Compacting 4@0 + 1@1 files
+2026/06/17-20:34:52.925 3bc8 Generated table #45@0: 4123 keys, 113470 bytes
+2026/06/17-20:34:52.925 3bc8 Compacted 4@0 + 1@1 files => 113470 bytes
+2026/06/17-20:34:52.926 3bc8 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/17-20:34:52.926 3bc8 Delete type=2 #32
+2026/06/17-20:34:52.926 3bc8 Delete type=2 #35
+2026/06/17-20:34:52.926 3bc8 Delete type=2 #38
+2026/06/17-20:34:52.927 3bc8 Delete type=2 #41
+2026/06/17-20:34:52.927 3bc8 Delete type=2 #44

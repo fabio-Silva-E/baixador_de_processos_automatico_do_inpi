@@ -20,7 +20,7 @@ def tentar_clicar_botao_pdf(
 
     try:
 
-        self.log_new(
+        self.log(
             f"📄 Worker {worker_id} procurando PDF"
         )
 
@@ -37,7 +37,7 @@ def tentar_clicar_botao_pdf(
 
         if not elemento:
 
-            self.log_new(
+            self.log(
                 f"❌ Worker {worker_id} PDF não encontrado"
             )
 
@@ -45,7 +45,7 @@ def tentar_clicar_botao_pdf(
 
         elemento.click()
 
-        self.log_new(
+        self.log(
             f"🖱 Worker {worker_id} clicou PDF"
         )
 
@@ -58,7 +58,7 @@ def tentar_clicar_botao_pdf(
             )
         )
 
-        self.log_new(
+        self.log(
             f"🧩 Worker {worker_id} captcha aberto"
         )
 
@@ -69,7 +69,7 @@ def tentar_clicar_botao_pdf(
 
     except Exception as e:
 
-        self.log_new(
+        self.log(
             f"❌ Worker {worker_id} erro PDF: {e}"
         )
 
@@ -125,20 +125,61 @@ def atualizar_lista_processos(self):
         )
         self.log_new(f"Falha ao carregar processos do Excel")
 
+
 def possui_servico_389_ou_394(self, driver) -> bool:
     """
-    Verifica se existe serviço 389 ou 394 na tabela de PDFs
+    Retorna True apenas se existir serviço 389 ou 394
+    e NÃO existir nenhum dos serviços bloqueadores.
     """
+
+    # Serviços que impedem o retorno True
+    servicos_bloqueadores = [
+        "161", "304", "414", "530",
+        "301", "303", "305", "401", "507"
+    ]
+
     try:
+        # Verifica se existe algum serviço bloqueador
+        xpath_bloqueadores = (
+            "//a[normalize-space()="
+            + " or normalize-space()=".join(f"'{s}'" for s in servicos_bloqueadores)
+            + "]"
+        )
+
+        driver.find_element(By.XPATH, xpath_bloqueadores)
+        self.log("🚫 Serviço bloqueador encontrado")
+        return False
+
+    except NoSuchElementException:
+        pass
+
+    try:
+        # Verifica se existe 389 ou 394
         driver.find_element(
             By.XPATH,
             "//a[normalize-space()='389' or normalize-space()='394']"
         )
         self.log("📄 Serviço 389 ou 394 detectado")
         return True
+
     except NoSuchElementException:
         self.log_new("📄 Serviço 389/394 NÃO encontrado")
         return False
+
+#def possui_servico_389_ou_394(self, driver) -> bool:
+#    """
+#    Verifica se existe serviço 389 ou 394 na tabela de PDFs
+#    """
+#    try:
+#        driver.find_element(
+#            By.XPATH,
+#            "//a[normalize-space()='389' or normalize-space()='394']"
+#        )
+#        self.log("📄 Serviço 389 ou 394 detectado")
+#        return True
+#    except NoSuchElementException:
+#        self.log_new("📄 Serviço 389/394 NÃO encontrado")
+#        return False
 
 def _repetir_processo_atual(self, worker_id, motivo):
 
@@ -203,6 +244,12 @@ def abrir_detalhe_processo(self, driver, worker_id):
             self.log_new(f"❌ Worker {worker_id} sem número")
             return
 
+        # ✅ Aborta imediatamente se já foi concluído (evita reprocessar após retry)
+        if numero in self.processos_concluidos:
+            self.log(f"⏭️ Worker {worker_id} processo {numero} já concluído — pulando")
+            self._finalizar_processo_atual(worker_id)
+            return
+
         self.log_new(
             f"🚀 PIPELINE START worker {worker_id} | {numero}"
         )
@@ -228,14 +275,34 @@ def abrir_detalhe_processo(self, driver, worker_id):
         campo.submit()
 
         # detalhe
-        link = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    "a[href*='detail']"
+        try:
+            link = WebDriverWait(driver, 20).until(
+                EC.element_to_be_clickable(
+                    (
+                        By.CSS_SELECTOR,
+                        "a[href*='detail']"
+                    )
                 )
             )
-        )
+        except TimeoutException:
+            # 🔧 FIX: quando o INPI nao encontra o processo pesquisado, ele
+            # mostra uma pagina de "Nenhum resultado" sem link de detalhe
+            # nenhum — o WebDriverWait acima sempre estourava os 20s
+            # inteiros esperando por um link que nunca ia aparecer, e
+            # depois ainda gastava as tentativas de retry (MAX_TENTATIVAS)
+            # antes de desistir, sem nunca marcar o processo como
+            # concluido (ou seja, ele seria tentado de novo na proxima
+            # execucao). Detectando esse texto aqui, tratamos como
+            # concluido de uma vez, na hora.
+            if "Nenhum resultado foi encontrado" in driver.page_source:
+                self.log(
+                    f"⏭️ Worker {worker_id} processo {numero} "
+                    f"sem resultado no INPI — marcando concluído"
+                )
+                self._registrar_processo_concluido(numero)
+                self._finalizar_processo_atual(worker_id)
+                return
+            raise
 
         driver.execute_script(
             "arguments[0].click();",
@@ -268,9 +335,27 @@ def abrir_detalhe_processo(self, driver, worker_id):
             f"📂 Worker {worker_id} liberando petições"
         )
 
-        self.garantir_acesso_peticiones(driver)
+        selenium = self._selenium_por_worker(worker_id)
 
-        self.liberar_acesso_peticiones(driver)
+        selenium.bloquear_fechamento_abas = True
+
+        try:
+            # 🔧 FIX: liberar_acesso_peticiones so deve rodar quando
+            # garantir_acesso_peticiones realmente clicou no link de
+            # restricao (ou seja, uma popup vai aparecer). Antes ela
+            # rodava sempre, e quando o processo ja tinha acesso liberado
+            # (sem popup nenhuma) ela ficava esperando os 20s completos
+            # do WAIT_POPUP a toa e, desde o fix anterior que propaga a
+            # falha como erro, isso derrubava o processo inteiro e forcava
+            # um retry desnecessario — travando o fluxo normal ("so baixa
+            # se passar pelo popup").
+            precisa_popup = self.garantir_acesso_peticiones(driver)
+            if precisa_popup:
+                self.liberar_acesso_peticiones(driver)
+            else:
+                self.log(f"⏭️ Worker {worker_id} sem restrição de petições — pulando popup")
+        finally:
+            selenium.bloquear_fechamento_abas = False
 
         self.log(
             f"✅ Worker {worker_id} petições liberadas"
@@ -302,6 +387,38 @@ def abrir_detalhe_processo(self, driver, worker_id):
 
         self.log_new(traceback.format_exc())
 
+        # 🔧 FIX: se a sessão do navegador morreu (crash do Chrome, sessão
+        # inválida, driver desconectado), o retry sozinho nunca resolvia —
+        # ficava tentando contra o mesmo driver morto para sempre. Agora
+        # detectamos esses casos e reiniciamos o navegador antes do retry.
+        erro_str = str(e).lower()
+        sinais_sessao_morta = (
+            "invalid session id",
+            "session deleted",
+            "session not created",
+            "chrome not reachable",
+            "disconnected: not connected to devtools",
+            "target window already closed",
+            "no such window",
+            "connection refused",
+            "chrome crashed",
+            "read timed out",
+            "timed out",
+            "connection aborted",
+            "remote end closed connection",
+            "max retries exceeded",
+        )
+        if any(sinal in erro_str for sinal in sinais_sessao_morta):
+            self.log_new(
+                f"💀 Worker {worker_id}: sessão do navegador morta detectada — reiniciando navegador"
+            )
+            try:
+                self.reiniciar_sessao_worker(worker_id)
+            except Exception as e2:
+                self.log_new(
+                    f"❌ Worker {worker_id}: falha ao reiniciar navegador: {e2}"
+                )
+
         self._repetir_processo_atual(
             worker_id,
             str(e)
@@ -311,6 +428,14 @@ def _fluxo_pdf(self, driver, worker_id, numero):
     self.log(
         f"📥 Worker {worker_id} iniciando fluxo PDF"
     )
+
+    # ✅ Verifica se o PDF já foi baixado antes de repetir todo o fluxo
+    nome_seguro = "".join(c for c in str(numero) if c.isalnum())
+    pasta_worker = Path(self.download_dirs[worker_id])
+    pdf_existente = pasta_worker / f"{nome_seguro}.pdf"
+    if pdf_existente.exists():
+        self.log(f"✅ Worker {worker_id} PDF já existe: {pdf_existente.name} — pulando download")
+        return str(pdf_existente)
 
     caminho_pdf = self.tentar_clicar_botao_pdf(
         driver,

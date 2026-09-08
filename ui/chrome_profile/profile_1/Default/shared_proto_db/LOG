@@ -1,3 +1,6 @@
-2026/05/10-22:12:06.965 6fc0 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\shared_proto_db/MANIFEST-000001
-2026/05/10-22:12:06.965 6fc0 Recovering log #7
-2026/05/10-22:12:06.966 6fc0 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\shared_proto_db/000007.log 
+2026/06/17-20:21:34.467 e60 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\shared_proto_db/MANIFEST-000001
+2026/06/17-20:21:34.467 e60 Recovering log #38
+2026/06/17-20:21:34.469 e60 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\shared_proto_db/000038.log 
+2026/06/17-20:22:30.216 e60 Level-0 table #42: started
+2026/06/17-20:22:30.218 e60 Level-0 table #42: 109689 bytes OK
+2026/06/17-20:22:30.219 e60 Delete type=0 #38

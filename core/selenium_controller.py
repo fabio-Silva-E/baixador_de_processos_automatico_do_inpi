@@ -1,102 +1,604 @@
-
 import os
 import time
+import threading
+import json
+import websocket
+import requests as http_requests
+from pathlib import Path
 
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import (
-    NoSuchElementException, TimeoutException, WebDriverException,
-    ElementClickInterceptedException, UnexpectedAlertPresentException,
-    NoAlertPresentException
+    NoSuchElementException
 )
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+
+
 from config.paths import PROFILE_PATH, DOWNLOAD_DIR
 from config.settings import WAIT_MEDIUM
 
 
 class SeleniumController:
+    NAVEGADOR = "edge"
     def __init__(self):
         self.driver = None
+        self.driver_lock = threading.RLock()
+        self._remote_debug_port = None
+        self.monitor_abas_ativo = False
+        self.monitor_abas_thread = None
+        self.bloquear_fechamento_abas = False
+        self.worker_id = None
 
+    def iniciar_monitor_abas(self):
+        if self.monitor_abas_thread and self.monitor_abas_thread.is_alive():
+            return
+        self.monitor_abas_ativo = True
+        def monitor():
+            while self.monitor_abas_ativo:
+                if not self.driver:
+                    time.sleep(0.5)
+                    continue
+                # enquanto bloqueado (ex: liberar_acesso_peticiones em andamento),
+                # nem sequer consulta window_handles: essa chamada compete pelo
+                # unico slot do connection pool do driver com o WebDriverWait
+                # que esta rodando naquele momento, podendo fazer o wait estourar
+                # o timeout por disputa de conexao, nao por lentidao real
+                if self.bloquear_fechamento_abas:
+                    time.sleep(0.5)
+                    continue
+                try:
+                    abas = self.driver.window_handles
+                    if len(abas) > 1:
+                        self.fechar_abas_extras()
+                except Exception as e:
+                    print(f"[MONITOR ERROR] {e}")
+                    break
+                time.sleep(0.5)
+        self.monitor_abas_thread = threading.Thread(target=monitor, daemon=True)
+        self.monitor_abas_thread.start()
+
+
+    def _marcar_perfil_como_fechado_normalmente(self, profile_path):
+        """
+        Edita o arquivo Preferences do perfil do Chrome/Edge para marcar
+        que a sessão anterior fechou normalmente, evitando o popup
+        "Restaurar páginas?" que trava a automação quando o navegador é
+        morto abruptamente (crash, kill por PID, etc).
+        """
+        import json
+        from pathlib import Path
+
+        prefs_path = Path(profile_path) / "Default" / "Preferences"
+        if not prefs_path.exists():
+            return  # perfil novo, sem estado anterior — nada a corrigir
+
+        try:
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+
+            dados.setdefault("profile", {})
+            dados["profile"]["exit_type"] = "Normal"
+            dados["profile"]["exited_cleanly"] = True
+
+            with open(prefs_path, "w", encoding="utf-8") as f:
+                json.dump(dados, f)
+        except Exception as e:
+            print(f"[selenium] não foi possível corrigir Preferences: {e}")
 
 
     def start(self):
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.options import Options
-
-        chrome_options = Options()
-
+        navegador = SeleniumController.NAVEGADOR
         worker_id = getattr(self, "worker_id", 1)
 
-        # 📁 PERFIL ÚNICO POR WORKER
-        profile_path = os.path.join(PROFILE_PATH, f"profile_{worker_id}")
-        os.makedirs(profile_path, exist_ok=True)
-        chrome_options.add_argument(f"--user-data-dir={profile_path}")
-
-        # 📁 DOWNLOAD ÚNICO POR WORKER
-        download_dir = os.path.join(DOWNLOAD_DIR, f"worker_{worker_id}")
-        os.makedirs(download_dir, exist_ok=True)
+        profile_path = Path(PROFILE_PATH) / navegador / f"profile_{worker_id}"
+        profile_path.mkdir(parents=True, exist_ok=True)
+        download_dir = Path(DOWNLOAD_DIR) / f"worker_{worker_id}"
+        download_dir.mkdir(parents=True, exist_ok=True)
 
         prefs = {
-            "download.default_directory": os.path.abspath(download_dir),
+            "download.default_directory": str(download_dir.resolve()),
             "download.prompt_for_download": False,
             "plugins.always_open_pdf_externally": True,
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
+            "profile.password_manager_leak_detection": False,
+            "download.open_pdf_in_system_reader": False,
+            "download.extensions_to_open": "",
+            "download.manager.showWhenStarting": False,
+            "download.show_download_insights": False,
+            "browser.download.animateNotifications": False,
+            "download.shelf.enabled": False,
+            "download.show_download_in_shelf": False,
         }
-        chrome_options.add_experimental_option("prefs", prefs)
 
-        # Flags que você já usa
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-features=PasswordLeakDetection")
-        chrome_options.add_argument("--disable-save-password-bubble")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--autoplay-policy=no-user-gesture-required")
-        chrome_options.add_argument("--verbose")
-        chrome_options.add_argument("--no-first-run")
-        chrome_options.add_argument("--disable-software-rasterizer")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--no-sandbox")
-
-        service = Service()
-        service.start_timeout = 60
+        debug_port = 9200 + worker_id
+        self._remote_debug_port = debug_port
 
         self._aguardar_rede_estavel()
+        self._marcar_perfil_como_fechado_normalmente(profile_path)
 
+        if navegador == "edge":
+            from selenium.webdriver.edge.service import Service
+            from selenium.webdriver.edge.options import Options
+            options = Options()
+            options.add_argument(f"--user-data-dir={profile_path}")
+            options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
+            options.add_experimental_option("prefs", prefs)
+            self._aplicar_flags_comuns(options)
+            self.service = Service()
+            self.driver = webdriver.Edge(service=self.service, options=options)
+
+        elif navegador == "chrome":
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.chrome.options import Options
+            options = Options()
+            options.add_argument(f"--user-data-dir={profile_path}")
+            options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
+            options.add_experimental_option("prefs", prefs)
+            self._aplicar_flags_comuns(options)
+            self.service = Service()
+            self.driver = webdriver.Chrome(service=self.service, options=options)
+
+        elif navegador == "brave":
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.chrome.options import Options
+            brave_paths = [
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"C:\Users\fs271\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ]
+            brave_bin = next((p for p in brave_paths if Path(p).exists()), None)
+            if not brave_bin:
+                raise RuntimeError("❌ Brave não encontrado.")
+            options = Options()
+            options.binary_location = brave_bin
+            options.add_argument(f"--user-data-dir={profile_path}")
+            options.add_argument("--profile-directory=Default")
+            options.add_argument(f"--remote-debugging-port={debug_port}")
+            options.add_experimental_option("prefs", prefs)
+            self._aplicar_flags_comuns(options)
+            self.service = Service()
+            self.driver = webdriver.Chrome(service=self.service, options=options)
+
+        elif navegador == "firefox":
+            from selenium.webdriver.firefox.service import Service
+            from selenium.webdriver.firefox.options import Options
+            from webdriver_manager.firefox import GeckoDriverManager
+            from config.paths import FIREFOX_BIN_PATHS
+            firefox_bin = next((p for p in FIREFOX_BIN_PATHS if Path(p).exists()), None)
+            if not firefox_bin:
+                raise RuntimeError("❌ Firefox não encontrado.")
+            firefox_profile = Path(PROFILE_PATH) / "firefox" / f"profile_{worker_id}"
+            firefox_profile.mkdir(parents=True, exist_ok=True)
+            options = Options()
+            options.binary_location = firefox_bin
+            options.add_argument("-profile")
+            options.add_argument(str(firefox_profile))
+            options.set_preference("browser.download.folderList", 2)
+            options.set_preference("browser.download.dir", str(download_dir.resolve()))
+            options.set_preference("browser.download.useDownloadDir", True)
+            options.set_preference("browser.download.manager.showWhenStarting", False)
+            options.set_preference("browser.download.manager.focusWhenStarting", False)
+            options.set_preference("browser.helperApps.neverAsk.saveToDisk",
+                                   "application/pdf,application/octet-stream")
+            options.set_preference("pdfjs.disabled", True)
+            options.set_preference("browser.helperApps.alwaysAsk.force", False)
+            options.set_preference("browser.download.manager.alertOnEXEOpen", False)
+            options.set_preference("browser.download.manager.closeWhenDone", True)
+            options.set_preference("xpinstall.signatures.required", False)
+            options.set_preference("browser.download.animateNotifications", False)
+            options.set_preference("browser.download.panel.shown", False)
+            self.driver = webdriver.Firefox(
+                service=Service(GeckoDriverManager().install()),
+                options=options
+            )
+            profile_path = firefox_profile
+
+        else:
+            raise ValueError(f"Navegador desconhecido: {navegador}")
+
+        self.download_dir = download_dir
+        self.profile_path = profile_path
+
+        # 🔧 FIX: 480px de largura (em vez de 600) — com os 4 workers em
+        # fila horizontal, 4 × 480 = 1920px, cabendo exatamente numa tela
+        # Full HD (1920x1080) sem nenhuma janela sair da área visível.
+        LARGURA_JANELA = 480
+        ALTURA_JANELA = 720
+        self.driver.set_window_size(LARGURA_JANELA, ALTURA_JANELA)
+
+        # 🆕 posiciona a janela automaticamente conforme o worker_id, todas
+        # numa única fila horizontal (lado a lado) — nunca em mais de uma
+        # linha, mesmo com os 4 workers abertos ao mesmo tempo.
+        pos_x = (worker_id - 1) * LARGURA_JANELA
+        pos_y = 0
         try:
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.set_window_size(600, 720)
-
-            # 🔥 guarda para uso futuro (downloads, logs, etc)
-            self.download_dir = download_dir
-
-            return self.driver
+            self.driver.set_window_position(pos_x, pos_y)
         except Exception as e:
-            raise RuntimeError(f"Erro ao iniciar ChromeDriver: {e}")
+            print(f"[selenium] não consegui posicionar a janela do worker {worker_id}: {e}")
 
+        # 🔧 FIX: sem timeout no cliente HTTP do Selenium, uma chamada travada
+        # ao chromedriver (socket que nunca recebe resposta) bloqueia a
+        # thread do worker para sempre — mesmo dentro de um WebDriverWait
+        # com timeout definido, porque o relógio do wait nunca chega a ser
+        # checado enquanto a chamada HTTP subjacente não retorna. Definindo
+        # um timeout aqui, hangs silenciosos viram exceções de verdade,
+        # permitindo que o retry e o reinicio_sessao_worker entrem em ação.
+        try:
+            # 🔧 FIX v2: `command_executor.set_timeout()` é um classmethod do
+            # Selenium que mexe num atributo de CLASSE compartilhado entre
+            # TODAS as conexões (RemoteConnection._client_config). Como os
+            # workers sobem seus navegadores quase ao mesmo tempo, isso cria
+            # uma condição de corrida: o timeout de um worker podia
+            # sobrescrever/perder efeito no de outro, deixando alguns
+            # drivers sem timeout nenhum (bloqueio infinito, que foi
+            # exatamente o travamento observado). Aqui setamos o timeout
+            # direto no objeto de config DESSA instância, sem depender do
+            # estado de classe compartilhado.
+            self.driver.command_executor._client_config.timeout = 30
+
+            # 🔧 FIX v3: o RemoteConnection cria seu urllib3.PoolManager com
+            # maxsize=1 por padrão (uma unica conexao HTTP por driver). A
+            # thread de monitor_abas (poll a cada 0.5s em window_handles) e o
+            # proprio worker fazem chamadas concorrentes nesse MESMO driver,
+            # entao com so 1 conexao elas ficam descartando/reabrindo conexao
+            # o tempo todo ("Connection pool is full, discarding connection"),
+            # o que sob qualquer pico de carga pode fazer um WebDriverWait
+            # estourar por disputa de conexao, nao por lentidao real da
+            # pagina. Recriamos o pool com mais slots para essa instância.
+            import urllib3
+            self.driver.command_executor._conn = urllib3.PoolManager(
+                timeout=self.driver.command_executor._client_config.timeout,
+                maxsize=10,
+                block=False,
+            )
+        except Exception as e:
+            print(f"[selenium] não foi possível definir timeout/pool do command_executor: {e}")
+
+        return self.driver
+
+    def _aplicar_flags_comuns(self, options):
+        """Flags comuns a Edge, Chrome e Brave."""
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-features=DownloadBubble,DownloadBubbleV2,DownloadShelf")
+        options.add_argument("--disable-download-notification")
+        options.add_argument("--remote-allow-origins=*")
+        options.add_argument("--disable-session-crashed-bubble")
+
+    # ==================================================
+    # 🧹 LIMPAR HISTÓRICO DE DOWNLOADS via chrome://downloads
+    # ==================================================
+    def limpar_historico_downloads(self):
+        """
+        Abre chrome://downloads em nova aba, executa clear via shadow DOM e fecha.
+        """
+        aba_atual = None
+        nova_aba = None
+        try:
+            self.bloquear_fechamento_abas = True  # impede monitor de fechar a nova aba
+            aba_atual = self.driver.current_window_handle
+            abas_antes = set(self.driver.window_handles)
+
+            # abre nova aba vazia
+            self.driver.execute_script("window.open('');")
+
+            # aguarda a nova aba aparecer (até 3s)
+            prazo = time.time() + 3
+            while time.time() < prazo:
+                abas_agora = set(self.driver.window_handles)
+                novas = abas_agora - abas_antes
+                if novas:
+                    nova_aba = novas.pop()
+                    break
+                time.sleep(0.1)
+
+            if not nova_aba:
+                print("[limpar_downloads] nova aba não apareceu")
+                return
+
+            self.driver.switch_to.window(nova_aba)
+            self.driver.get("chrome://downloads/")
+            time.sleep(1.0)  # aguarda o DOM de chrome://downloads carregar
+
+            resultado = self.driver.execute_script("""
+                try {
+                    const mgr = document.querySelector('downloads-manager');
+                    if (!mgr) return 'no-manager';
+                    const root = mgr.shadowRoot;
+                    if (!root) return 'no-shadow';
+
+                    // tenta método direto
+                    if (typeof mgr.clearAll === 'function') { mgr.clearAll(); return 'clearAll-direct'; }
+
+                    // procura toolbar e botão clear dentro do shadow DOM aninhado
+                    function findClearBtn(el) {
+                        if (!el) return null;
+                        const sr = el.shadowRoot || el;
+                        const btn = sr.querySelector('#clearAll') || sr.querySelector('[id*=clear]');
+                        if (btn) return btn;
+                        for (const child of sr.querySelectorAll('*')) {
+                            const found = findClearBtn(child);
+                            if (found) return found;
+                        }
+                        return null;
+                    }
+
+                    // abre o menu "mais ações" primeiro
+                    const toolbar = root.querySelector('#toolbar') || root.querySelector('downloads-toolbar');
+                    if (toolbar) {
+                        const troot = toolbar.shadowRoot || toolbar;
+                        const moreBtn = troot.querySelector('#moreActionsButton') ||
+                                        troot.querySelector('cr-icon-button');
+                        if (moreBtn) moreBtn.click();
+                    }
+                    return 'menu-opened';
+                } catch(e) { return 'err1:' + e.toString(); }
+            """)
+            time.sleep(0.4)
+
+            resultado2 = self.driver.execute_script("""
+                try {
+                    const mgr = document.querySelector('downloads-manager');
+                    if (!mgr) return 'no-manager';
+
+                    function findAndClick(el) {
+                        if (!el) return false;
+                        const sr = el.shadowRoot || el;
+                        const candidates = sr.querySelectorAll('button, cr-button, [role=menuitem], paper-item');
+                        for (const btn of candidates) {
+                            const txt = (btn.textContent || '').toLowerCase().trim();
+                            if (txt.includes('clear') || txt.includes('limpar') || btn.id.includes('clear')) {
+                                btn.click();
+                                return 'clicked:' + (btn.id || txt);
+                            }
+                        }
+                        // recursivo em shadow roots
+                        for (const child of sr.querySelectorAll('*')) {
+                            if (child.shadowRoot) {
+                                const res = findAndClick(child);
+                                if (res) return res;
+                            }
+                        }
+                        return null;
+                    }
+
+                    const res = findAndClick(mgr);
+                    return res || 'not-found';
+                } catch(e) { return 'err2:' + e.toString(); }
+            """)
+
+            print(f"[limpar_downloads] {resultado} / {resultado2}")
+            time.sleep(0.3)
+
+        except Exception as e:
+            print(f"[limpar_downloads] erro: {e}")
+
+        finally:
+            self.bloquear_fechamento_abas = False
+            try:
+                # fecha a aba de downloads se ainda existir
+                handles = self.driver.window_handles
+                if nova_aba and nova_aba in handles:
+                    self.driver.switch_to.window(nova_aba)
+                    self.driver.close()
+                # volta para a aba original
+                handles = self.driver.window_handles
+                if aba_atual and aba_atual in handles:
+                    self.driver.switch_to.window(aba_atual)
+                elif handles:
+                    self.driver.switch_to.window(handles[0])
+            except Exception as fe:
+                print(f"[limpar_downloads] finally erro: {fe}")
+
+    # ==================================================
+    # 🧹 LIMPAR HISTÓRICO DE NAVEGAÇÃO via chrome://settings/clearBrowserData
+    # ==================================================
+    def limpar_historico_navegacao(self):
+        """
+        Abre chrome://settings/clearBrowserData em nova aba, tenta ajustar o
+        período para 'Todo o período' e confirma a limpeza do histórico de
+        navegação (mesmo padrão de limpar_historico_downloads).
+        """
+        aba_atual = None
+        nova_aba = None
+        try:
+            self.bloquear_fechamento_abas = True  # impede monitor de fechar a nova aba
+            aba_atual = self.driver.current_window_handle
+            abas_antes = set(self.driver.window_handles)
+
+            # abre nova aba vazia
+            self.driver.execute_script("window.open('');")
+
+            # aguarda a nova aba aparecer (até 3s)
+            prazo = time.time() + 3
+            while time.time() < prazo:
+                abas_agora = set(self.driver.window_handles)
+                novas = abas_agora - abas_antes
+                if novas:
+                    nova_aba = novas.pop()
+                    break
+                time.sleep(0.1)
+
+            if not nova_aba:
+                print("[limpar_historico] nova aba não apareceu")
+                return
+
+            self.driver.switch_to.window(nova_aba)
+            self.driver.get("chrome://settings/clearBrowserData")
+            time.sleep(1.2)  # aguarda o diálogo de limpeza carregar
+
+            # tenta selecionar "Todo o período" / "All time" no seletor de intervalo
+            resultado1 = self.driver.execute_script("""
+                try {
+                    function deepQueryAll(root, sel) {
+                        let out = [];
+                        try { out = out.concat(Array.from(root.querySelectorAll(sel))); } catch(e) {}
+                        const all = root.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.shadowRoot) out = out.concat(deepQueryAll(el.shadowRoot, sel));
+                        }
+                        return out;
+                    }
+                    const selects = deepQueryAll(document, 'select');
+                    for (const sel of selects) {
+                        if (sel.id && sel.id.toLowerCase().includes('clearfrom')) {
+                            const opts = Array.from(sel.options).map(o => o.textContent.toLowerCase());
+                            const idx = opts.findIndex(t => t.includes('todo') || t.includes('all time'));
+                            if (idx >= 0) {
+                                sel.selectedIndex = idx;
+                                sel.dispatchEvent(new Event('change', {bubbles:true}));
+                                return 'periodo-ajustado:' + opts[idx];
+                            }
+                        }
+                    }
+                    return 'seletor-nao-encontrado';
+                } catch(e) { return 'err1:' + e.toString(); }
+            """)
+            time.sleep(0.3)
+
+            # clica no botão de confirmar limpeza ("Limpar dados" / "Clear data")
+            resultado2 = self.driver.execute_script("""
+                try {
+                    function deepQueryAll(root, sel) {
+                        let out = [];
+                        try { out = out.concat(Array.from(root.querySelectorAll(sel))); } catch(e) {}
+                        const all = root.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.shadowRoot) out = out.concat(deepQueryAll(el.shadowRoot, sel));
+                        }
+                        return out;
+                    }
+                    const candidatos = deepQueryAll(document, 'cr-button, button');
+                    for (const btn of candidatos) {
+                        const txt = (btn.textContent || '').toLowerCase().trim();
+                        const id = (btn.id || '').toLowerCase();
+                        if (id.includes('clearbrowsingdataconfirm') ||
+                            txt.includes('limpar dados') || txt.includes('clear data')) {
+                            btn.click();
+                            return 'clicado:' + (btn.id || txt);
+                        }
+                    }
+                    return 'botao-nao-encontrado';
+                } catch(e) { return 'err2:' + e.toString(); }
+            """)
+
+            print(f"[limpar_historico] {resultado1} / {resultado2}")
+            time.sleep(1.5)  # aguarda a limpeza concluir antes de fechar a aba
+
+        except Exception as e:
+            print(f"[limpar_historico] erro: {e}")
+
+        finally:
+            self.bloquear_fechamento_abas = False
+            try:
+                # fecha a aba de configurações se ainda existir
+                handles = self.driver.window_handles
+                if nova_aba and nova_aba in handles:
+                    self.driver.switch_to.window(nova_aba)
+                    self.driver.close()
+                # volta para a aba original
+                handles = self.driver.window_handles
+                if aba_atual and aba_atual in handles:
+                    self.driver.switch_to.window(aba_atual)
+                elif handles:
+                    self.driver.switch_to.window(handles[0])
+            except Exception as fe:
+                print(f"[limpar_historico] finally erro: {fe}")
+
+    # ==================================================
+    # 🌐 REDE
+    # ==================================================
     def _aguardar_rede_estavel(self, timeout=30):
-        inicio = time.time()
-
-        while time.time() - inicio < timeout:
+        start = time.time()
+        while time.time() - start < timeout:
             try:
                 r = requests.get("https://www.google.com", timeout=5)
                 if r.status_code == 200:
                     return
-            except requests.exceptions.RequestException:
+            except:
                 pass
-            time.sleep(3)  # Aguardar mais tempo
-        raise RuntimeError("❌ A rede não estabilizou após a troca de VPN.")
+            time.sleep(3)
+        raise RuntimeError("❌ Rede instável")
 
+    # ==================================================
+    # 🛑 STOP
+    # ==================================================
     def stop(self):
+        # 🔧 FIX: `parar_monitor_abas()` nunca existiu como metodo — so
+        # existe a flag monitor_abas_ativo, checada no loop de
+        # iniciar_monitor_abas. Chamar um metodo inexistente aqui lançava
+        # AttributeError na PRIMEIRA linha de stop(), interrompendo a
+        # funcao ali mesmo e pulando o driver.quit() e a limpeza de
+        # processo zumbi por PID logo abaixo — ou seja, o fix anterior
+        # contra processos zumbis nunca chegou a rodar de verdade. Esse
+        # erro aparecia (mascarado) toda vez que uma sessao reiniciava.
+        self.monitor_abas_ativo = False
+
+        # 🔧 FIX: driver.quit() manda um comando HTTP pro chromedriver e
+        # espera resposta — se o chromedriver ja tiver crashado/travado
+        # (exatamente os stack traces nativos vistos no app.log), essa
+        # chamada pode travar por muito tempo ou falhar, e o antigo
+        # `except: pass` engolia isso silenciosamente sem garantir que o
+        # processo terminasse. Rodar num thread com timeout evita travar
+        # a reinicializacao da sessao esperando um quit() que nunca volta.
+        if self.driver:
+            t = threading.Thread(target=self.driver.quit, daemon=True)
+            t.start()
+            t.join(timeout=10)
+
+        # 🔧 FIX: mesmo que o quit() acima tenha travado/falhado, garante
+        # que o processo do chromedriver/msedgedriver E o navegador filho
+        # sejam mortos de verdade pelo PID. Sem isso, cada crash+reinicio
+        # de sessao deixava um processo zumbi rodando (consumindo RAM),
+        # que se acumula ao longo de uma execucao longa ate a maquina
+        # ficar sem memoria — mais grave em maquinas mais fracas, batendo
+        # com o programa "fechando sozinho" na secundaria.
         try:
-            if self.driver:
-                self.driver.quit()
-        except Exception:
-            pass
+            import psutil
+            service = getattr(self, "service", None)
+            proc = getattr(service, "process", None)
+            if proc and proc.pid:
+                try:
+                    p = psutil.Process(proc.pid)
+                    for child in p.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except Exception as e:
+            print(f"[selenium] erro ao forcar encerramento do processo: {e}")
+
+    # ==================================================
+    # 🔥 FECHAR ABAS EXTRAS
+    # ==================================================
+    def fechar_abas_extras(self):
+        try:
+            abas = self.driver.window_handles
+            if len(abas) <= 1:
+                return
+            aba_principal = abas[0]
+            for aba in abas[1:]:
+                try:
+                    self.driver.switch_to.window(aba)
+                    url = self.driver.current_url
+                    if "downloads" in url:
+                        continue
+                    self.driver.close()
+                except Exception:
+                    pass
+            self.driver.switch_to.window(aba_principal)
+        except Exception as e:
+            print(f"Erro fechar abas: {e}")
 
     def wait_for_element(self, by, value, timeout=WAIT_MEDIUM):
         return WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located((by, value)))
@@ -142,30 +644,19 @@ class SeleniumController:
             return False
 
     def _arquivo_estavel(self, caminho, tentativas=5, intervalo=0.5):
-        """
-        Só considera estável se o tamanho NÃO mudar por várias verificações seguidas
-        """
         try:
             tamanhos_iguais = 0
             tamanho_anterior = -1
-
             for _ in range(tentativas):
                 tamanho = os.path.getsize(caminho)
-
                 if tamanho == tamanho_anterior:
                     tamanhos_iguais += 1
                 else:
-                    tamanhos_iguais = 0  # reset se mudou
-
+                    tamanhos_iguais = 0
                 tamanho_anterior = tamanho
-
-                # 🔥 só aceita se ficou estável por várias vezes
                 if tamanhos_iguais >= 2:
                     return True
-
                 time.sleep(intervalo)
-
         except FileNotFoundError:
             return False
-
         return False

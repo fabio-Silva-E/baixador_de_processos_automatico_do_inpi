@@ -14,6 +14,14 @@ def resource_path(relative):
         return os.path.join(sys._MEIPASS, relative)
     return os.path.join(os.path.abspath("."), relative)
 
+FIREFOX_PROFILE_PATH = BASE_DIR / "ui" / "firefox_profile"
+FIREFOX_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
+
+FIREFOX_BIN_PATHS = [
+    r"C:\Program Files\Mozilla Firefox\firefox.exe",
+    r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+]
+
 PROFILE_PATH = BASE_DIR / "ui"/ "chrome_profile"
 
 EXCEL_PROCESSOS_PATH = BASE_DIR / "processos.xlsx"

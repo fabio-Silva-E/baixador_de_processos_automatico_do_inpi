@@ -1,3 +1,6 @@
-2026/05/10-22:12:06.869 68f0 Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Local Storage\leveldb/MANIFEST-000001
-2026/05/10-22:12:06.873 68f0 Recovering log #3
-2026/05/10-22:12:06.874 68f0 Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Local Storage\leveldb/000003.log 
+2026/06/17-20:21:34.391 4b4c Reusing MANIFEST E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Local Storage\leveldb/MANIFEST-000001
+2026/06/17-20:21:34.395 4b4c Recovering log #92
+2026/06/17-20:21:34.396 4b4c Reusing old log E:\busca inpi\busca inpi\inpi_busca_codigo_limpo\ui\chrome_profile\profile_1\Default\Local Storage\leveldb/000092.log 
+2026/06/17-21:03:34.870 2928 Level-0 table #95: started
+2026/06/17-21:03:34.882 2928 Level-0 table #95: 21154 bytes OK
+2026/06/17-21:03:34.883 2928 Delete type=0 #92

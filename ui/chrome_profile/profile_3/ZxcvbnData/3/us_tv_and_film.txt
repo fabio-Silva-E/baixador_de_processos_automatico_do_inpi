@@ -1699,7 +1699,7 @@ there'll
 fairy
 necessarily
 seventy
-self.log_new
+print
 motel
 underwear
 grams
@@ -1815,7 +1815,7 @@ ripped
 raising
 scratch
 rings
-self.log_news
+prints
 thee
 arguing
 ephram
@@ -2254,7 +2254,7 @@ fond
 corky
 seduce
 liquor
-fingerself.log_news
+fingerprints
 enchantment
 butters
 stuffed
@@ -5330,7 +5330,7 @@ intruding
 impersonating
 ignorance
 hamburgers
-footself.log_news
+footprints
 fluke
 fleas
 festivities
@@ -5390,7 +5390,7 @@ heartbreak
 haunting
 gangs
 frown
-fingerself.log_new
+fingerprint
 exhausting
 everytime
 disregard
@@ -5921,7 +5921,7 @@ cholesterol
 cashed
 broccoli
 brats
-blueself.log_news
+blueprints
 blindfold
 billing
 attach
@@ -9181,7 +9181,7 @@ campsite
 burglars
 breakfasts
 bra'tac
-blueself.log_new
+blueprint
 bleedin
 blabbed
 beneficiary
@@ -9265,7 +9265,7 @@ psychics
 promos
 prob'ly
 pristine
-self.log_newout
+printout
 priestess
 prenuptial
 precedes
@@ -11294,7 +11294,7 @@ headgear
 headboard
 hazing
 harem
-handself.log_new
+handprint
 hairspray
 gutiurrez
 goosebumps
@@ -13407,7 +13407,7 @@ tommorow
 tollan
 toity
 timpani
-thumbself.log_new
+thumbprint
 thankless
 tell'em
 telepathy
@@ -13605,7 +13605,7 @@ molester
 molestation
 molars
 moans
-misself.log_new
+misprint
 mismatched
 mirth
 mindful
@@ -13736,8 +13736,8 @@ floatin
 flirts
 flings
 flatfoot
-fingerself.log_newing
-fingerself.log_newed
+fingerprinting
+fingerprinted
 fingering
 finald
 fillet
@@ -18185,7 +18185,7 @@ prosaic
 propositioned
 proclivity
 probed
-self.log_newouts
+printouts
 prevision
 pressers
 preset
@@ -18331,7 +18331,7 @@ noinch
 nohoho
 nobler
 nitwits
-newsself.log_new
+newsprint
 newspaperman
 newscaster
 neuropathy
@@ -18566,7 +18566,7 @@ inadequacies
 imprudent
 improprieties
 imprison
-imself.log_newed
+imprinted
 impressively
 impostors
 importante
