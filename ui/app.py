@@ -333,11 +333,24 @@ class MainApp(QWidget):
 
         faulthandler.enable(file=fault_log)
 
+        # 🔧 FIX: era dump a cada 10s pra sempre, sem nenhum limite de
+        # tamanho — numa sessão longa isso vira um arquivo de dezenas de
+        # milhares de linhas. Aumentado o intervalo pra 60s (6x menos
+        # dumps) e adicionado um QTimer que fecha e reabre ("gira") o
+        # arquivo sempre que ele passar de FAULT_LOG_MAX_BYTES, mantendo o
+        # tamanho sempre limitado, sem perder a capacidade de diagnóstico.
+        self._fault_log = fault_log
+        self.FAULT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
         faulthandler.dump_traceback_later(
-            10,
+            60,
             repeat=True,
-            file=fault_log
+            file=self._fault_log
         )
+
+        self._fault_log_timer = QTimer(self)
+        self._fault_log_timer.timeout.connect(self._girar_faulthandler_log)
+        self._fault_log_timer.start(5 * 60 * 1000)  # checa a cada 5 min
         process = psutil.Process(os.getpid())
         self.monitor_abas_ativo = False
         self.monitor_abas_thread = None
@@ -467,6 +480,24 @@ class MainApp(QWidget):
         # aplica a visibilidade correta do Login Aba 4 conforme a
         # quantidade de workers restaurada de config_ui.txt
         self._atualizar_visibilidade_worker4()
+
+    def _girar_faulthandler_log(self):
+        """Fecha e reabre (limpo) o faulthandler.log sempre que ele
+        ultrapassar FAULT_LOG_MAX_BYTES, pra ele nunca crescer sem limite
+        numa sessão longa."""
+        try:
+            if os.path.getsize("faulthandler.log") < self.FAULT_LOG_MAX_BYTES:
+                return
+
+            faulthandler.cancel_dump_traceback_later()
+            self._fault_log.close()
+
+            self._fault_log = open("faulthandler.log", "w", encoding="utf-8")
+            faulthandler.enable(file=self._fault_log)
+            faulthandler.dump_traceback_later(60, repeat=True, file=self._fault_log)
+
+        except Exception as e:
+            print(f"⚠️ não consegui girar faulthandler.log: {e}")
 
     def _criar_interface(self):
         self.setWindowTitle("INPI - vs(1.4)")
@@ -677,7 +708,7 @@ class MainApp(QWidget):
 
         # 🔥 FIX #1 — limita o log a 300 linhas para não travar a UI
         doc = self.console_log.document()
-        while doc.blockCount() > 300:
+        while doc.blockCount() > 200:
             cursor = self.console_log.textCursor()
             cursor.movePosition(cursor.Start)
             cursor.select(cursor.BlockUnderCursor)
